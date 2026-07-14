@@ -1,0 +1,54 @@
+# Tundra Historic Map Portal — Python runtime dependencies.
+# Pinned to versions verified working on 2026-07-14 (Python 3.12).
+#
+# Install into a virtualenv:
+#     python3.12 -m venv .venv && source .venv/bin/activate
+#     pip install --upgrade pip
+#     pip install -r requirements.txt
+#
+# NOTES
+#  * rasterio / fiona / pyproj ship manylinux wheels that BUNDLE GDAL/GEOS/PROJ,
+#    so a plain pip venv works for the API and processing code — no system GDAL
+#    needed at runtime.
+#  * EXCEPTION: utils/warp.py (one-time historic GIF -> COG preprocessing) shells
+#    out to the GDAL command-line tools. Those are NOT in the wheels; install
+#    system GDAL for that step only:   sudo apt-get install -y gdal-bin
+#  * torch: the default PyPI wheel is CUDA-enabled on Linux. For a specific CUDA
+#    build or CPU-only, install torch separately first, e.g.:
+#       pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu124
+#  * segment-geospatial pulls a broad dependency tree; only `segment_anything` +
+#    `torch` are used by utils/segment.py. Kept as-is because it is the tested set.
+
+# --- Core numerics ---
+numpy==2.3.4
+pandas==2.3.3
+scipy==1.16.3
+
+# --- Geospatial ---
+rasterio==1.4.3
+geopandas==1.1.1
+shapely==2.1.2
+pyproj==3.7.2
+fiona==1.10.1
+
+# --- Imagery / STAC (modern satellite) ---
+pystac-client==0.9.0
+planetary-computer==1.0.0
+
+# --- Segmentation (Segment Anything Model) ---
+torch==2.7.1
+segment-geospatial==1.4.1
+
+# --- API + dynamic COG tiles ---
+fastapi==0.139.0
+uvicorn[standard]==0.51.0
+titiler.core==2.0.5
+titiler.mosaic==2.0.5
+rio-cogeo==7.0.2
+
+# --- Streamlit coverage app (legacy viewer) ---
+streamlit==1.50.0
+plotly==6.3.1
+
+# --- Plotting / QA figures ---
+matplotlib==3.10.7

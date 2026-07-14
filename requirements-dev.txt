@@ -1,0 +1,9 @@
+# Development extras (not needed to run the portal).
+#     pip install -r requirements-dev.txt
+-r requirements.txt
+
+# Notebooks (exploration / training under notebooks/)
+jupyterlab
+
+# Note: web frontend end-to-end tests use the Node `playwright` package,
+# declared in web/package.json (devDependencies), not here.

@@ -1,0 +1,39 @@
+# Tundra Historic Map Portal — full stack (web + api + titiler).
+#
+# Prereqs: a GPU host with the NVIDIA Container Toolkit (for SAM), and the data
+# volume (historic COGs + model cache) available on the host.
+#
+#   TUNDRA_API_KEY=changeme docker compose up --build
+#
+# Then open http://localhost:8080
+services:
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    environment:
+      - TUNDRA_API_KEY=${TUNDRA_API_KEY:-}
+      - TUNDRA_DATA=/data
+      - TUNDRA_FOOTPRINTS=/app/map/Yamal-Nenets/map_footprints_wgs84.gpkg
+      - TUNDRA_HISTORIC_COG=/data/historic_cog/Yamal-Nenets
+      - TUNDRA_SAM_DIR=/data/models/sam
+    volumes:
+      - ${TUNDRA_DATA_HOST:-/mnt/memory/Tundra}:/data
+      - ./map:/app/map:ro
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  web:
+    build:
+      context: ./web
+    depends_on:
+      - api
+    ports:
+      - "8080:80"

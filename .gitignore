@@ -1,0 +1,53 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# ---- Node / web ----
+web/node_modules/
+web/dist/
+web/.vite/
+node_modules/
+
+# ---- Environment / secrets ----
+.env
+.env.local
+
+# ---- Data (provided/moved separately; see docs/data-layout.md) ----
+# Local symlinks to external stores and macOS mirror:
+/data
+/map
+/map_macos
+# Any real data that lands at these paths:
+data/
+map/
+*.gpkg
+*.gpkg.bak*
+*.tif
+*.tiff
+*.TIF
+*.pth
+*.pt
+
+# ---- Large exploration notebook (archived separately, ~33 MB) ----
+notebooks/exploration/1.Map_Explore.ipynb
+
+# ---- Separate published repo (not part of this project) ----
+tundra_lake_historical_maps/
+
+# ---- Editor / OS / logs ----
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+# ---- Claude Code local session/memory ----
+.claude/
+
+# TypeScript incremental build info
+*.tsbuildinfo
