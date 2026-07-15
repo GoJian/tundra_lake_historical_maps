@@ -70,20 +70,22 @@ Data directories (`map/`, `data/`) are **not** in the repo — see [Data](#data)
 
 ## Quick start (local dev)
 
-Prerequisites: **Python 3.12**, **Node ≥ 20**, and (for regenerating historic COGs
-only) system GDAL. A CUDA GPU is recommended for SAM segmentation.
+Prerequisites: **Python 3.12** (or [`uv`](https://docs.astral.sh/uv/), which will
+fetch it for you), **Node ≥ 20**, and (for regenerating historic COGs only) system
+GDAL. A CUDA GPU is recommended for SAM segmentation.
+
+The Python side runs from a plain **`.venv`** — no conda/mamba required. The
+geospatial wheels (`rasterio`, `fiona`, `pyproj`) bundle their own GDAL/GEOS/PROJ,
+so pip alone is enough for the API and all processing code.
 
 ```bash
 # 1. clone + enter
 git clone <your-remote-url> tundra-portal && cd tundra-portal
 
 # 2. Python environment
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-# GPU torch build if needed:
-#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu124
+uv venv --python 3.12 .venv    # uv fetches CPython 3.12 if you don't have it
+uv pip install -r requirements.txt
+source .venv/bin/activate      # or prefix commands with .venv/bin/
 # GDAL CLI only if you will run utils/warp.py:
 #   sudo apt-get install -y gdal-bin
 
@@ -99,6 +101,51 @@ cd web
 npm install
 npm run dev                    # http://localhost:5173  (proxies to :8000)
 ```
+
+<details>
+<summary>Don't have <code>uv</code>? / prefer stock <code>venv</code>?</summary>
+
+[uv](https://docs.astral.sh/uv/) is a single static binary and is the easiest way
+to get Python 3.12 when your distro ships something older (Ubuntu 22.04 ships
+3.10, which is **too old** — `numpy==2.3.4` requires ≥ 3.11):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh    # installs to ~/.local/bin
+```
+
+With an existing Python 3.12 on `PATH`, stock tooling works identically:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+For notebook/dev extras (JupyterLab), use `requirements-dev.txt` instead.
+
+</details>
+
+### Verifying the environment
+
+Datum correctness depends on PROJ finding its database, so it is worth confirming
+the shift is actually being applied:
+
+```bash
+.venv/bin/python -c "
+from pyproj import Transformer, Geod
+t = Transformer.from_crs('EPSG:4284', 'EPSG:4326', always_xy=True)   # Pulkovo 1942 -> WGS84
+x, y = t.transform(68.5, 66.9)
+print('shift:', round(Geod(ellps='WGS84').inv(68.5, 66.9, x, y)[2], 1), 'm')"
+# expect ~108 m. A shift of ~0 m means PROJ's database was not found.
+```
+
+> **On `PROJ_DATA` / `PROJ_LIB`:** the `.venv` needs neither — the wheels carry
+> their own PROJ database. `pyproj` always prefers its bundled copy and ignores
+> the variables; `rasterio`/GDAL *does* honour them, and will fail loudly
+> (`Cannot find proj.db`) if they point somewhere invalid. If you also use the
+> `geo` conda env, which requires them, prefer setting them per-shell rather than
+> in your profile — a stale path is the one way to break PROJ here.
 
 ## Data
 
@@ -141,7 +188,8 @@ python -m utils.warp --batch --base map/Yamal-Nenets \
 | Streamlit coverage viewer | `streamlit run streamlit_app/app.py` | http://localhost:8501 |
 
 All commands run from the repo root (so `import utils` and relative `map/`/`data/`
-paths resolve).
+paths resolve) with the `.venv` active — either `source .venv/bin/activate` first,
+or prefix with `.venv/bin/` (e.g. `.venv/bin/uvicorn …`).
 
 ## Deployment
 

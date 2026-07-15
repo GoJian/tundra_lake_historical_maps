@@ -1,15 +1,19 @@
 # Tundra Historic Map Portal — Python runtime dependencies.
 # Pinned to versions verified working on 2026-07-14 (Python 3.12).
 #
-# Install into a virtualenv:
+# Install into a virtualenv (no conda required — see README "Quick start"):
+#     uv venv --python 3.12 .venv && uv pip install -r requirements.txt
+#   or, with an existing Python 3.12 on PATH:
 #     python3.12 -m venv .venv && source .venv/bin/activate
 #     pip install --upgrade pip
 #     pip install -r requirements.txt
 #
 # NOTES
+#  * Python 3.12 is required; 3.10 (Ubuntu 22.04 default) is too old for numpy 2.3.
 #  * rasterio / fiona / pyproj ship manylinux wheels that BUNDLE GDAL/GEOS/PROJ,
 #    so a plain pip venv works for the API and processing code — no system GDAL
-#    needed at runtime.
+#    needed at runtime. Do NOT export PROJ_DATA/PROJ_LIB (e.g. pointing at a conda
+#    env) when using this venv — pyproj resolves its own bundled PROJ database.
 #  * EXCEPTION: utils/warp.py (one-time historic GIF -> COG preprocessing) shells
 #    out to the GDAL command-line tools. Those are NOT in the wheels; install
 #    system GDAL for that step only:   sudo apt-get install -y gdal-bin
