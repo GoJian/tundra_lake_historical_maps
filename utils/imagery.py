@@ -127,12 +127,20 @@ def _cloud_mask(item, sensor, dst_crs, transform, width, height) -> np.ndarray:
 
 def composite(bbox, datetime, sensor="sentinel-2", res=None, dst_crs="EPSG:3857",
               bands=("blue", "green", "red", "nir", "swir16"),
-              max_cloud=20, max_items=25) -> Composite:
-    """Cloud-free per-pixel median composite over bbox/date for the given sensor."""
+              max_cloud=20, max_items=25, on_progress=None) -> Composite:
+    """Cloud-free per-pixel median composite over bbox/date for the given sensor.
+
+    ``on_progress``: optional callback invoked with a dict describing the current
+    stage — ``{"stage": "search"}`` before the STAC query, then per candidate
+    scene ``{"stage": "compose", "done": i, "total": n, "used": k}`` — so callers
+    can surface a progress bar / ETA over the network-bound work.
+    """
     cfg = _ASSETS[sensor]
     res = res or cfg["default_res"]
     transform, width, height, dst = _target_grid(bbox, res, dst_crs)
 
+    if on_progress:
+        on_progress({"stage": "search", "done": 0, "total": 0, "used": 0})
     items = search(bbox, datetime, sensor, max_cloud, limit=max_items)
     if not items:
         raise ValueError(f"No {sensor} scenes for bbox={bbox} datetime={datetime} "
@@ -140,8 +148,9 @@ def composite(bbox, datetime, sensor="sentinel-2", res=None, dst_crs="EPSG:3857"
 
     stacks = {b: [] for b in bands}
     n_used = 0
+    total = len(items)
     with rasterio.Env(**_GDAL_ENV):
-        for it in items:
+        for i, it in enumerate(items):
             try:
                 clear = _cloud_mask(it, sensor, dst, transform, width, height)
                 if clear.mean() < 0.02:      # scene essentially cloudy over ROI
@@ -156,6 +165,10 @@ def composite(bbox, datetime, sensor="sentinel-2", res=None, dst_crs="EPSG:3857"
                 n_used += 1
             except Exception:
                 continue
+            finally:
+                if on_progress:
+                    on_progress({"stage": "compose", "done": i + 1, "total": total,
+                                 "used": n_used})
 
     if n_used == 0:
         raise ValueError("All candidate scenes were too cloudy over the ROI.")

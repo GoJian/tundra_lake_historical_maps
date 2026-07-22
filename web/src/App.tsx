@@ -1,9 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import MapView, { BASEMAPS } from "./components/MapView";
 import ResultsPanel, { MetricKey } from "./components/ResultsPanel";
 import TimeSeriesPanel from "./components/TimeSeriesPanel";
-import { api, BBox, ExtractResult, TimeseriesResult } from "./api";
+import { api, BBox, ExtractResult, ExtractProgress, TimeseriesResult } from "./api";
+
+const fmtEta = (s: number | null | undefined) =>
+  s == null ? "—" : s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 
 const YAMAL: BBox = [64, 63, 90, 74];
 const METRIC_LABELS: [MetricKey, string][] = [
@@ -25,6 +28,7 @@ export default function App() {
   const [strategy, setStrategy] = useState("seeded");
 
   const [extract, setExtract] = useState<ExtractResult | null>(null);
+  const [extractJobId, setExtractJobId] = useState<string | null>(null);
   const [sheetIdx, setSheetIdx] = useState(0);
   const [satFrameIdx, setSatFrameIdx] = useState(0);
   const [histOpacity, setHistOpacity] = useState(0.85);
@@ -38,15 +42,43 @@ export default function App() {
 
   const extractMut = useMutation({
     mutationFn: (c: string) => api.extract({ bbox: roi!, datetime, sensor, cadence: c }),
-    onSuccess: (r) => { setExtract(r); setSheetIdx(0); setSatFrameIdx(0); },
+    onSuccess: (r) => setExtractJobId(r.job_id),
   });
+
+  // Poll the extract job for staged progress (STAC search vs. per-scene
+  // compositing) and the eventual ExtractResult. Fast poll for a smooth bar.
+  const extractJob = useQuery({
+    queryKey: ["extractjob", extractJobId],
+    queryFn: () => api.job<ExtractResult, ExtractProgress>(extractJobId!),
+    enabled: !!extractJobId,
+    refetchInterval: (q) => {
+      const st = q.state.data?.status;
+      return st === "done" || st === "error" ? false : 700;
+    },
+  });
+
+  // apply the result once the composite build completes
+  useEffect(() => {
+    if (extractJob.data?.status === "done" && extractJob.data.result) {
+      setExtract(extractJob.data.result);
+      setSheetIdx(0); setSatFrameIdx(0);
+    }
+  }, [extractJob.data?.status]);
+
+  const exStatus = extractJob.data?.status;
+  const extractProgress = extractJob.data?.progress ?? null;
+  const extracting = extractMut.isPending ||
+    (!!extractJobId && exStatus !== "done" && exStatus !== "error");
+  const extractError = extractMut.isError
+    ? String(extractMut.error)
+    : exStatus === "error" ? extractJob.data?.error ?? "extract failed" : null;
 
   // Flip the satellite time-granularity. Re-runs extract with the new cadence if
   // we've already extracted once (composites are cached server-side, so toggling
   // back to a cadence already built is near-instant).
   const onCadence = (c: string) => {
     setCadence(c); setSatFrameIdx(0);
-    if (roi && extract) extractMut.mutate(c);
+    if (roi && extract) { setExtractJobId(null); extractMut.mutate(c); }
   };
 
   const segMut = useMutation({
@@ -160,10 +192,22 @@ export default function App() {
           <label className="field">Date range
             <input value={datetime} onChange={(e) => setDatetime(e.target.value)} />
           </label>
-          <button className="primary" disabled={!roi || extractMut.isPending} onClick={() => extractMut.mutate(cadence)}>
-            {extractMut.isPending ? <><span className="spinner" />Extracting…</> : "Extract imagery + maps"}
+          <button className="primary" disabled={!roi || extracting}
+            onClick={() => { setExtractJobId(null); extractMut.mutate(cadence); }}>
+            {extracting ? <><span className="spinner" />Extracting…</> : "Extract imagery + maps"}
           </button>
-          {extractMut.isError && <div className="status err">{String(extractMut.error).slice(0, 160)}</div>}
+          {extracting && (
+            <div className="ts-progress" style={{ marginTop: 4 }}>
+              <div className="ts-progress-head">
+                <span>{extractProgress?.message ?? "Starting…"}</span>
+                {extractProgress?.eta_s != null && <span className="hint">~{fmtEta(extractProgress.eta_s)} left</span>}
+              </div>
+              <div className="progress-track">
+                <div className="progress-fill anim" style={{ width: `${extractProgress?.pct ?? 4}%` }} />
+              </div>
+            </div>
+          )}
+          {extractError && <div className="status err">{extractError.slice(0, 160)}</div>}
         </div>
 
         {extract && (
@@ -171,7 +215,7 @@ export default function App() {
             <div className="group">
               <label className="h">Satellite over time {satScenes ? `(${satScenes} scenes)` : ""}</label>
               <label className="field">Step by
-                <select value={cadence} onChange={(e) => onCadence(e.target.value)} disabled={extractMut.isPending}>
+                <select value={cadence} onChange={(e) => onCadence(e.target.value)} disabled={extracting}>
                   {CADENCES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </label>
@@ -187,7 +231,6 @@ export default function App() {
                   </div>
                 </>
               )}
-              {extractMut.isPending && cadence !== "none" && <div className="status run">Building composites…</div>}
               <div className="slider-row">
                 <span className="hint">opacity</span>
                 <input type="range" min={0} max={1} step={0.05} value={compOpacity} onChange={(e) => setCompOpacity(+e.target.value)} />

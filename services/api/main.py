@@ -202,32 +202,106 @@ def _windows(cadence: str, start: dt.date, end: dt.date) -> List[Tuple[str, str]
     return []
 
 
-def _satellite_frame(req: ExtractReq, label: str, dtr: str) -> dict:
-    """Build (or reuse) the composite for one time step. A step with no clear
-    scenes yields tile_url=None so the client can show a 'no data' slider stop."""
+def _run_extract(job: Job, req: ExtractReq, cadence: str,
+                 wins: Optional[List[Tuple[str, str]]]):
+    """Build (or reuse) the ROI composite(s), publishing staged progress + ETA so
+    the client can show what the server is doing (STAC search vs. per-scene
+    compositing) and how long it's likely to take. Runs off the GPU lock — this
+    work is network/CPU bound (downloading and reducing satellite scenes)."""
+    import time
     from utils import imagery
-    cpath = _composite_path(req, dtr)
-    n_scenes = None
-    if not os.path.exists(cpath):
+    lon0, lat0, lon1, lat1 = req.bbox
+    t0 = time.time()
+
+    def _publish(stage: str, message: str, pct: float, eta_s: Optional[float]):
+        job.progress = {"stage": stage, "message": message,
+                        "pct": round(max(0.0, min(100.0, pct)), 1),
+                        "eta_s": None if eta_s is None else round(eta_s, 1),
+                        "elapsed_s": round(time.time() - t0, 1)}
+
+    RESCALE = "&rescale=0,3000"
+
+    if cadence == "none":
+        cpath = _composite_path(req)
+        n_scenes = None
+        if os.path.exists(cpath):
+            _publish("cached", "Loading cached composite…", 100.0, 0.0)
+        else:
+            def cb(p):
+                if p["stage"] == "search":
+                    _publish("search",
+                             f"Searching Planetary Computer for {req.sensor} scenes…",
+                             1.0, None)
+                    return
+                done, total = p["done"], p["total"]
+                el = time.time() - t0
+                eta = (el / done) * (total - done) if done else None
+                _publish("compose",
+                         f"Compositing scene {done}/{total} "
+                         f"({p['used']} clear so far)…",
+                         100.0 * done / total if total else 0.0, eta)
+            comp = imagery.composite(tuple(req.bbox), req.datetime, sensor=req.sensor,
+                                     res=req.res, on_progress=cb)
+            imagery.write_cog(comp, cpath, bands=("red", "green", "blue"))
+            n_scenes = comp.n_scenes
+        _publish("done", "Composite ready.", 100.0, 0.0)
+        # rescale reflectance*10000 (~0-3000 over land) to 0-255 for natural colour
+        return {"composite_id": os.path.basename(cpath), "composite_cog": cpath,
+                "tile_url": tile_url(cpath) + RESCALE, "n_scenes": n_scenes,
+                "cadence": cadence, "satellite_frames": [],
+                "historic_sheets": _historic_sheets(lon0, lat0, lon1, lat1)}
+
+    # cadence != none: build a frame per time step, reporting a global fraction
+    # (completed frames + within-frame scene progress) so the ETA spans the run.
+    n = len(wins)
+    frames: List[dict] = []
+    for fi, (label, dtr) in enumerate(wins):
+        cpath = _composite_path(req, dtr)
+        if os.path.exists(cpath):
+            frac = (fi + 1) / n
+            el = time.time() - t0
+            _publish("compose", f"Time step {fi + 1}/{n} ({label}) — cached",
+                     100.0 * frac, el * (1 - frac) / frac if frac else None)
+            frames.append({"label": label, "datetime": dtr,
+                           "tile_url": tile_url(cpath) + RESCALE, "n_scenes": None})
+            continue
+
+        def cb(p, fi=fi, label=label):
+            inner = (p["done"] / p["total"]) if p.get("total") else 0.0
+            frac = (fi + inner) / n
+            el = time.time() - t0
+            eta = el * (1 - frac) / frac if frac > 0 else None
+            if p["stage"] == "search":
+                msg = f"Time step {fi + 1}/{n} ({label}): searching catalog…"
+            else:
+                msg = (f"Time step {fi + 1}/{n} ({label}): compositing "
+                       f"{p['done']}/{p['total']}…")
+            _publish(p["stage"], msg, 100.0 * frac, eta)
+
         try:
-            comp = imagery.composite(tuple(req.bbox), dtr, sensor=req.sensor, res=req.res)
+            comp = imagery.composite(tuple(req.bbox), dtr, sensor=req.sensor,
+                                     res=req.res, on_progress=cb)
+            imagery.write_cog(comp, cpath, bands=("red", "green", "blue"))
+            frames.append({"label": label, "datetime": dtr,
+                           "tile_url": tile_url(cpath) + RESCALE,
+                           "n_scenes": comp.n_scenes})
         except ValueError:
-            return {"label": label, "datetime": dtr, "tile_url": None, "n_scenes": 0}
-        imagery.write_cog(comp, cpath, bands=("red", "green", "blue"))
-        n_scenes = comp.n_scenes
-    return {"label": label, "datetime": dtr,
-            "tile_url": tile_url(cpath) + "&rescale=0,3000", "n_scenes": n_scenes}
+            frames.append({"label": label, "datetime": dtr, "tile_url": None,
+                           "n_scenes": 0})
+    _publish("done", "All time steps ready.", 100.0, 0.0)
+    return {"composite_id": None, "composite_cog": None, "tile_url": None,
+            "n_scenes": None, "cadence": cadence, "satellite_frames": frames,
+            "historic_sheets": _historic_sheets(lon0, lat0, lon1, lat1)}
 
 
 @app.post("/roi/extract", dependencies=[Depends(require_key)])
 def extract(req: ExtractReq):
-    """Build (or reuse) cloud-free composite COG(s) for the ROI and list the
-    overlapping historic sheets, so the client can layer them with time sliders.
+    """Kick off an async job that builds cloud-free composite COG(s) for the ROI
+    and lists overlapping historic sheets. Poll /jobs/{id} for progress + result.
 
     cadence="none" returns one composite over the whole range (top-level
     tile_url). annual|seasonal|monthly instead return a `satellite_frames` series
     the client steps through over time."""
-    from utils import imagery
     lon0, lat0, lon1, lat1 = req.bbox
     if _area_km2(lon0, lat0, lon1, lat1) > config.MAX_ROI_KM2:
         raise HTTPException(413, f"ROI exceeds {config.MAX_ROI_KM2} km2 limit")
@@ -236,23 +310,8 @@ def extract(req: ExtractReq):
     if cadence not in ("none", "annual", "seasonal", "monthly"):
         raise HTTPException(422, "cadence must be none|annual|seasonal|monthly")
 
-    frames: List[dict] = []
-    tile: Optional[str] = None
-    composite_id: Optional[str] = None
-    composite_cog: Optional[str] = None
-    n_scenes: Optional[int] = None
-
-    if cadence == "none":
-        cpath = _composite_path(req)
-        if not os.path.exists(cpath):
-            comp = imagery.composite(tuple(req.bbox), req.datetime, sensor=req.sensor,
-                                     res=req.res)
-            imagery.write_cog(comp, cpath, bands=("red", "green", "blue"))
-            n_scenes = comp.n_scenes
-        # rescale reflectance*10000 (~0-3000 over land) to 0-255 for natural colour
-        tile = tile_url(cpath) + "&rescale=0,3000"
-        composite_id, composite_cog = os.path.basename(cpath), cpath
-    else:
+    wins: Optional[List[Tuple[str, str]]] = None
+    if cadence != "none":
         start, end = _parse_range(req.datetime)
         wins = _windows(cadence, start, end)
         if not wins:
@@ -262,15 +321,10 @@ def extract(req: ExtractReq):
                 413, f"{len(wins)} time steps exceed the "
                 f"{config.MAX_SATELLITE_FRAMES}-frame limit; narrow the date range "
                 "or use a coarser cadence")
-        frames = [_satellite_frame(req, label, dtr) for label, dtr in wins]
 
-    return {"composite_id": composite_id,
-            "composite_cog": composite_cog,
-            "tile_url": tile,
-            "n_scenes": n_scenes,
-            "cadence": cadence,
-            "satellite_frames": frames,
-            "historic_sheets": _historic_sheets(lon0, lat0, lon1, lat1)}
+    job = STORE.create()
+    STORE.run(job, lambda j: _run_extract(j, req, cadence, wins), serialize_gpu=False)
+    return {"job_id": job.id, "status": job.status}
 
 
 def _run_segment(req: SegmentReq):

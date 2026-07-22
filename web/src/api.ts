@@ -86,12 +86,21 @@ export interface JobProgress {
   series: { label: string; n_scenes: number; summary: SegmentSummary | null }[];
 }
 
-export interface JobState<R = SegmentResult> {
+// Staged progress published while an ROI extract (composite build) is in flight.
+export interface ExtractProgress {
+  stage: "search" | "compose" | "cached" | "done";
+  message: string;
+  pct: number;              // 0–100
+  eta_s: number | null;     // estimated seconds remaining
+  elapsed_s: number;
+}
+
+export interface JobState<R = SegmentResult, P = JobProgress> {
   job_id: string;
   status: "queued" | "running" | "done" | "error";
   error: string | null;
   result: R | null;
-  progress?: JobProgress | null;
+  progress?: P | null;
 }
 
 export interface ExtractReq {
@@ -115,8 +124,9 @@ export const api = {
       headers: headers(),
     }),
 
+  // Returns a job handle; poll `job()` for staged progress and the ExtractResult.
   extract: (req: ExtractReq) =>
-    jfetch<ExtractResult>(`${BASE}/roi/extract`, {
+    jfetch<{ job_id: string; status: string }>(`${BASE}/roi/extract`, {
       method: "POST",
       headers: headers(true),
       body: JSON.stringify(req),
@@ -136,8 +146,8 @@ export const api = {
       body: JSON.stringify(req),
     }),
 
-  job: <R = SegmentResult>(id: string) =>
-    jfetch<JobState<R>>(`${BASE}/jobs/${id}`, { headers: headers() }),
+  job: <R = SegmentResult, P = JobProgress>(id: string) =>
+    jfetch<JobState<R, P>>(`${BASE}/jobs/${id}`, { headers: headers() }),
 };
 
 export const fmtArea = (m2: number) =>
