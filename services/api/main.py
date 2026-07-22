@@ -45,7 +45,7 @@ TILE_TMS = "WebMercatorQuad"
 
 
 def tile_url(path: str) -> str:
-    return f"/tiles/cog/tiles/{TILE_TMS}/{{z}}/{{x}}/{{y}}?url={path}"
+    return f"{config.URL_PREFIX}/tiles/cog/tiles/{TILE_TMS}/{{z}}/{{x}}/{{y}}?url={path}"
 
 
 # --- auth ---

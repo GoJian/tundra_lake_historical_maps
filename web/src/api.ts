@@ -6,6 +6,11 @@ export type BBox = [number, number, number, number]; // lon_min, lat_min, lon_ma
 
 const API_KEY = import.meta.env.VITE_API_KEY as string | undefined;
 
+// URL prefix the app is served under (Vite's `base`: "/tundra/" in a sub-path
+// deployment, "/" in dev). API requests are prefixed so they hit the
+// reverse-proxied backend rather than the site root. Trailing slash stripped.
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
 function headers(json = false): HeadersInit {
   const h: Record<string, string> = {};
   if (json) h["Content-Type"] = "application/json";
@@ -69,25 +74,25 @@ export interface SegmentReq extends ExtractReq {
 
 export const api = {
   footprints: (bbox: BBox) =>
-    jfetch<GeoJSON.FeatureCollection>(`/footprints?bbox=${bbox.join(",")}`, {
+    jfetch<GeoJSON.FeatureCollection>(`${BASE}/footprints?bbox=${bbox.join(",")}`, {
       headers: headers(),
     }),
 
   extract: (req: ExtractReq) =>
-    jfetch<ExtractResult>("/roi/extract", {
+    jfetch<ExtractResult>(`${BASE}/roi/extract`, {
       method: "POST",
       headers: headers(true),
       body: JSON.stringify(req),
     }),
 
   segment: (req: SegmentReq) =>
-    jfetch<{ job_id: string }>("/segment", {
+    jfetch<{ job_id: string }>(`${BASE}/segment`, {
       method: "POST",
       headers: headers(true),
       body: JSON.stringify(req),
     }),
 
-  job: (id: string) => jfetch<JobState>(`/jobs/${id}`, { headers: headers() }),
+  job: (id: string) => jfetch<JobState>(`${BASE}/jobs/${id}`, { headers: headers() }),
 };
 
 export const fmtArea = (m2: number) =>

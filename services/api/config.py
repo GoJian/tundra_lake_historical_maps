@@ -19,6 +19,11 @@ COMPOSITE_DIR = os.path.join(CACHE_DIR, "composites")
 # Auth: require this key in the X-API-Key header. Empty disables auth (dev only).
 API_KEY = os.environ.get("TUNDRA_API_KEY", "")
 
+# URL prefix the API is reverse-proxied under (e.g. "/tundra"). Prepended to the
+# tile-URL templates handed to the frontend so the browser hits the proxied path.
+# Empty when served at the site root (dev / standalone).
+URL_PREFIX = os.environ.get("TUNDRA_URL_PREFIX", "").rstrip("/")
+
 # Bound expensive work.
 MAX_ROI_KM2 = float(os.environ.get("TUNDRA_MAX_ROI_KM2", "2500"))
 
