@@ -158,11 +158,19 @@ export default function MapView(props: Props) {
     });
   }, [props.compositeTileUrl]);
   useEffect(() => { withMap((m) => m.setPaintProperty("composite", "raster-opacity", props.compositeOpacity)); }, [props.compositeOpacity]);
-  // zoom to the ROI once a composite is extracted, so the imagery + lakes are visible
+  // zoom to the ROI once a composite is extracted, so the imagery + lakes are
+  // visible. Fit once per ROI — stepping the satellite time-slider swaps the
+  // composite tiles but must not re-fit the view on every step.
+  const lastFit = useRef<string>("");
   useEffect(() => {
     withMap((m) => {
-      if (props.compositeTileUrl && props.roi)
-        m.fitBounds([[props.roi[0], props.roi[1]], [props.roi[2], props.roi[3]]], { padding: 60, duration: 700 });
+      if (props.compositeTileUrl && props.roi) {
+        const key = props.roi.join(",");
+        if (key !== lastFit.current) {
+          lastFit.current = key;
+          m.fitBounds([[props.roi[0], props.roi[1]], [props.roi[2], props.roi[3]]], { padding: 60, duration: 700 });
+        }
+      }
     });
   }, [props.compositeTileUrl]);
 

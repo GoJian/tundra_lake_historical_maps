@@ -30,11 +30,20 @@ export interface HistoricSheet {
   tile_url: string;
 }
 
-export interface ExtractResult {
-  composite_id: string;
-  composite_cog: string;
-  tile_url: string;
+export interface SatelliteFrame {
+  label: string;          // e.g. "2021", "2023-Q3", "2023-07"
+  datetime: string;       // "YYYY-MM-DD/YYYY-MM-DD"
+  tile_url: string | null; // null when the step had no clear scenes
   n_scenes: number | null;
+}
+
+export interface ExtractResult {
+  composite_id: string | null;
+  composite_cog: string | null;
+  tile_url: string | null;
+  n_scenes: number | null;
+  cadence: string;                    // none | annual | seasonal | monthly
+  satellite_frames: SatelliteFrame[]; // populated when cadence != none
   historic_sheets: HistoricSheet[];
 }
 
@@ -51,11 +60,38 @@ export interface SegmentResult {
   lakes_geojson: GeoJSON.FeatureCollection;
 }
 
-export interface JobState {
+// One cadence time-step's segmentation outcome. `summary`/`lakes_geojson` are
+// null for a step with no usable scenes (error carries the reason).
+export interface SeriesEntry {
+  label: string;
+  datetime: string;
+  n_scenes: number;
+  summary: SegmentSummary | null;
+  lakes_geojson?: GeoJSON.FeatureCollection | null; // present only in the final result
+  error?: string | null;
+}
+
+export interface TimeseriesResult {
+  cadence: string;
+  series: SeriesEntry[];
+}
+
+// Live progress published while a time-series run is in flight.
+export interface JobProgress {
+  done: number;
+  total: number;
+  current: string;
+  elapsed_s: number;
+  eta_s: number | null;
+  series: { label: string; n_scenes: number; summary: SegmentSummary | null }[];
+}
+
+export interface JobState<R = SegmentResult> {
   job_id: string;
   status: "queued" | "running" | "done" | "error";
   error: string | null;
-  result: SegmentResult | null;
+  result: R | null;
+  progress?: JobProgress | null;
 }
 
 export interface ExtractReq {
@@ -63,6 +99,7 @@ export interface ExtractReq {
   datetime: string;
   sensor: string;
   res?: number;
+  cadence?: string; // none | annual | seasonal | monthly
 }
 export interface SegmentReq extends ExtractReq {
   strategy?: string;
@@ -92,7 +129,15 @@ export const api = {
       body: JSON.stringify(req),
     }),
 
-  job: (id: string) => jfetch<JobState>(`${BASE}/jobs/${id}`, { headers: headers() }),
+  segmentTimeseries: (req: SegmentReq) =>
+    jfetch<{ job_id: string; total: number }>(`${BASE}/segment/timeseries`, {
+      method: "POST",
+      headers: headers(true),
+      body: JSON.stringify(req),
+    }),
+
+  job: <R = SegmentResult>(id: string) =>
+    jfetch<JobState<R>>(`${BASE}/jobs/${id}`, { headers: headers() }),
 };
 
 export const fmtArea = (m2: number) =>

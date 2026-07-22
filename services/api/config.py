@@ -26,5 +26,8 @@ URL_PREFIX = os.environ.get("TUNDRA_URL_PREFIX", "").rstrip("/")
 
 # Bound expensive work.
 MAX_ROI_KM2 = float(os.environ.get("TUNDRA_MAX_ROI_KM2", "2500"))
+# Max number of satellite time-steps a single extract may build (annual/seasonal/
+# monthly cadence). Each step is a separate STAC search + composite on first run.
+MAX_SATELLITE_FRAMES = int(os.environ.get("TUNDRA_MAX_SAT_FRAMES", "15"))
 
 os.makedirs(COMPOSITE_DIR, exist_ok=True)

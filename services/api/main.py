@@ -15,7 +15,8 @@ from __future__ import annotations
 import os
 import sys
 import hashlib
-from typing import List, Optional
+import datetime as dt
+from typing import List, Optional, Tuple
 
 # Make the repo-root `utils` package importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -91,6 +92,10 @@ class ExtractReq(BaseModel):
     datetime: str = "2023-06-15/2023-09-10"
     sensor: str = "sentinel-2"
     res: Optional[int] = None
+    cadence: str = Field(
+        "none",
+        description="Time-slice the satellite view into steps: "
+        "none|annual|seasonal|monthly.")
 
 
 class SegmentReq(ExtractReq):
@@ -138,35 +143,133 @@ def _historic_sheets(lon0, lat0, lon1, lat1):
     return out
 
 
-def _composite_path(req: ExtractReq) -> str:
+def _composite_path(req: ExtractReq, datetime: Optional[str] = None) -> str:
+    dtr = datetime or req.datetime
     key = hashlib.md5(
-        f"{req.bbox}|{req.datetime}|{req.sensor}|{req.res}".encode()).hexdigest()[:12]
+        f"{req.bbox}|{dtr}|{req.sensor}|{req.res}".encode()).hexdigest()[:12]
     return os.path.join(config.COMPOSITE_DIR, f"{req.sensor}_{key}.tif")
+
+
+def _parse_range(s: str) -> Tuple[dt.date, dt.date]:
+    try:
+        a, b = s.split("/")
+        return dt.date.fromisoformat(a), dt.date.fromisoformat(b)
+    except Exception:
+        raise HTTPException(422, "datetime must be 'YYYY-MM-DD/YYYY-MM-DD'")
+
+
+def _clip(d: dt.date, lo: dt.date, hi: dt.date) -> dt.date:
+    return max(lo, min(hi, d))
+
+
+def _windows(cadence: str, start: dt.date, end: dt.date) -> List[Tuple[str, str]]:
+    """Slice [start, end] into (label, 'YYYY-MM-DD/YYYY-MM-DD') time steps.
+
+    annual   — reuse the range's month-day window once per calendar year spanned
+               (same season year-over-year), labelled by year.
+    monthly  — one step per calendar month, clipped to the range.
+    seasonal — one step per calendar quarter (Q1-Q4), clipped to the range.
+    """
+    if cadence == "annual":
+        out = []
+        for y in range(start.year, end.year + 1):
+            try:
+                s, e = start.replace(year=y), end.replace(year=y)
+            except ValueError:                     # Feb 29 in a non-leap year
+                continue
+            if e < s:                              # season crosses New Year
+                e = e.replace(year=y + 1)
+            out.append((str(y), f"{s.isoformat()}/{e.isoformat()}"))
+        return out
+    if cadence == "monthly":
+        out, y, m = [], start.year, start.month
+        while (y, m) <= (end.year, end.month):
+            first = dt.date(y, m, 1)
+            nxt = dt.date(y + m // 12, m % 12 + 1, 1)
+            s, e = _clip(first, start, end), _clip(nxt - dt.timedelta(days=1), start, end)
+            out.append((f"{y}-{m:02d}", f"{s.isoformat()}/{e.isoformat()}"))
+            y, m = nxt.year, nxt.month
+        return out
+    if cadence == "seasonal":
+        out, y, q = [], start.year, (start.month - 1) // 3 + 1
+        while (y, q) <= (end.year, (end.month - 1) // 3 + 1):
+            qstart = dt.date(y, (q - 1) * 3 + 1, 1)
+            nxt = dt.date(y + (q * 3) // 12, (q * 3) % 12 + 1, 1)
+            s, e = _clip(qstart, start, end), _clip(nxt - dt.timedelta(days=1), start, end)
+            out.append((f"{y}-Q{q}", f"{s.isoformat()}/{e.isoformat()}"))
+            y, q = (y + 1, 1) if q == 4 else (y, q + 1)
+        return out
+    return []
+
+
+def _satellite_frame(req: ExtractReq, label: str, dtr: str) -> dict:
+    """Build (or reuse) the composite for one time step. A step with no clear
+    scenes yields tile_url=None so the client can show a 'no data' slider stop."""
+    from utils import imagery
+    cpath = _composite_path(req, dtr)
+    n_scenes = None
+    if not os.path.exists(cpath):
+        try:
+            comp = imagery.composite(tuple(req.bbox), dtr, sensor=req.sensor, res=req.res)
+        except ValueError:
+            return {"label": label, "datetime": dtr, "tile_url": None, "n_scenes": 0}
+        imagery.write_cog(comp, cpath, bands=("red", "green", "blue"))
+        n_scenes = comp.n_scenes
+    return {"label": label, "datetime": dtr,
+            "tile_url": tile_url(cpath) + "&rescale=0,3000", "n_scenes": n_scenes}
 
 
 @app.post("/roi/extract", dependencies=[Depends(require_key)])
 def extract(req: ExtractReq):
-    """Build (or reuse) a cloud-free composite COG for the ROI and list the
-    overlapping historic sheets, so the client can layer them with a time slider."""
+    """Build (or reuse) cloud-free composite COG(s) for the ROI and list the
+    overlapping historic sheets, so the client can layer them with time sliders.
+
+    cadence="none" returns one composite over the whole range (top-level
+    tile_url). annual|seasonal|monthly instead return a `satellite_frames` series
+    the client steps through over time."""
     from utils import imagery
     lon0, lat0, lon1, lat1 = req.bbox
     if _area_km2(lon0, lat0, lon1, lat1) > config.MAX_ROI_KM2:
         raise HTTPException(413, f"ROI exceeds {config.MAX_ROI_KM2} km2 limit")
 
-    cpath = _composite_path(req)
-    if not os.path.exists(cpath):
-        comp = imagery.composite(tuple(req.bbox), req.datetime, sensor=req.sensor,
-                                 res=req.res)
-        imagery.write_cog(comp, cpath, bands=("red", "green", "blue"))
-        n_scenes = comp.n_scenes
-    else:
-        n_scenes = None
+    cadence = (req.cadence or "none").lower()
+    if cadence not in ("none", "annual", "seasonal", "monthly"):
+        raise HTTPException(422, "cadence must be none|annual|seasonal|monthly")
 
-    # rescale reflectance*10000 (~0-3000 over land) to 0-255 for natural colour
-    return {"composite_id": os.path.basename(cpath),
-            "composite_cog": cpath,
-            "tile_url": tile_url(cpath) + "&rescale=0,3000",
+    frames: List[dict] = []
+    tile: Optional[str] = None
+    composite_id: Optional[str] = None
+    composite_cog: Optional[str] = None
+    n_scenes: Optional[int] = None
+
+    if cadence == "none":
+        cpath = _composite_path(req)
+        if not os.path.exists(cpath):
+            comp = imagery.composite(tuple(req.bbox), req.datetime, sensor=req.sensor,
+                                     res=req.res)
+            imagery.write_cog(comp, cpath, bands=("red", "green", "blue"))
+            n_scenes = comp.n_scenes
+        # rescale reflectance*10000 (~0-3000 over land) to 0-255 for natural colour
+        tile = tile_url(cpath) + "&rescale=0,3000"
+        composite_id, composite_cog = os.path.basename(cpath), cpath
+    else:
+        start, end = _parse_range(req.datetime)
+        wins = _windows(cadence, start, end)
+        if not wins:
+            raise HTTPException(422, "date range yields no time steps for this cadence")
+        if len(wins) > config.MAX_SATELLITE_FRAMES:
+            raise HTTPException(
+                413, f"{len(wins)} time steps exceed the "
+                f"{config.MAX_SATELLITE_FRAMES}-frame limit; narrow the date range "
+                "or use a coarser cadence")
+        frames = [_satellite_frame(req, label, dtr) for label, dtr in wins]
+
+    return {"composite_id": composite_id,
+            "composite_cog": composite_cog,
+            "tile_url": tile,
             "n_scenes": n_scenes,
+            "cadence": cadence,
+            "satellite_frames": frames,
             "historic_sheets": _historic_sheets(lon0, lat0, lon1, lat1)}
 
 
@@ -207,10 +310,72 @@ def segment(req: SegmentReq):
     return {"job_id": job.id, "status": job.status}
 
 
+def _run_timeseries(job: Job, req: SegmentReq, wins: List[Tuple[str, str]]):
+    """Segment each cadence time-step in turn, publishing per-frame progress and
+    an ETA so the client can render a progress bar and a change-over-time chart."""
+    import time
+    total = len(wins)
+    t0 = time.time()
+
+    def _snapshot(done: int, current: str, series: List[dict]):
+        elapsed = time.time() - t0
+        eta = (elapsed / done) * (total - done) if done else None
+        # light series (drop geojson) so polling stays cheap while running
+        job.progress = {
+            "done": done, "total": total, "current": current,
+            "elapsed_s": round(elapsed, 1),
+            "eta_s": round(eta, 1) if eta is not None else None,
+            "series": [{"label": s["label"], "n_scenes": s["n_scenes"],
+                        "summary": s["summary"]} for s in series],
+        }
+
+    _snapshot(0, wins[0][0], [])
+    series: List[dict] = []
+    for i, (label, dtr) in enumerate(wins):
+        job.progress = {**job.progress, "current": label}  # mark in-flight
+        try:
+            r = _run_segment(req.model_copy(update={"datetime": dtr}))
+            entry = {"label": label, "datetime": dtr, "n_scenes": r["n_scenes"],
+                     "summary": r["summary"], "lakes_geojson": r["lakes_geojson"],
+                     "error": None}
+        except Exception as e:  # noqa: BLE001 — a cloudy/empty step shouldn't abort the run
+            entry = {"label": label, "datetime": dtr, "n_scenes": 0, "summary": None,
+                     "lakes_geojson": None, "error": str(e)[:200]}
+        series.append(entry)
+        _snapshot(i + 1, label, series)
+    return {"cadence": req.cadence, "series": series}
+
+
+@app.post("/segment/timeseries", dependencies=[Depends(require_key)])
+def segment_timeseries(req: SegmentReq):
+    """Kick off a per-time-step segmentation run (one SAM pass per cadence frame)
+    so lake metrics can be charted over time. Requires a non-'none' cadence."""
+    lon0, lat0, lon1, lat1 = req.bbox
+    if _area_km2(lon0, lat0, lon1, lat1) > config.MAX_ROI_KM2:
+        raise HTTPException(413, f"ROI exceeds {config.MAX_ROI_KM2} km2 limit")
+    cadence = (req.cadence or "none").lower()
+    if cadence == "none":
+        raise HTTPException(422, "timeseries requires cadence annual|seasonal|monthly")
+    if cadence not in ("annual", "seasonal", "monthly"):
+        raise HTTPException(422, "cadence must be annual|seasonal|monthly")
+    start, end = _parse_range(req.datetime)
+    wins = _windows(cadence, start, end)
+    if not wins:
+        raise HTTPException(422, "date range yields no time steps for this cadence")
+    if len(wins) > config.MAX_SATELLITE_FRAMES:
+        raise HTTPException(
+            413, f"{len(wins)} time steps exceed the "
+            f"{config.MAX_SATELLITE_FRAMES}-frame limit; narrow the date range "
+            "or use a coarser cadence")
+    job = STORE.create()
+    STORE.run(job, lambda j: _run_timeseries(j, req, wins), serialize_gpu=True)
+    return {"job_id": job.id, "status": job.status, "total": len(wins)}
+
+
 @app.get("/jobs/{job_id}", dependencies=[Depends(require_key)])
 def job_status(job_id: str):
     job: Optional[Job] = STORE.get(job_id)
     if job is None:
         raise HTTPException(404, "job not found")
     return {"job_id": job.id, "status": job.status, "error": job.error,
-            "result": job.result}
+            "result": job.result, "progress": job.progress}

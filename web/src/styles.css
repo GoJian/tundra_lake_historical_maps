@@ -104,3 +104,10 @@ table.lakes th { color: var(--muted); font-weight: 600; }
 .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
 .checks { display: flex; flex-direction: column; gap: 4px; }
 .checks label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+
+/* time-series progress bar */
+.ts-progress { display: flex; flex-direction: column; gap: 6px; }
+.ts-progress-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; color: var(--text); }
+.progress-track { height: 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); overflow: hidden; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.4s ease; }
+.progress-fill.anim { background: linear-gradient(90deg, var(--accent-2), var(--accent)); }

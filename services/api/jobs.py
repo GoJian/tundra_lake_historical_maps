@@ -21,7 +21,7 @@ class Job:
     status: str = "queued"          # queued | running | done | error
     result: Optional[Any] = None
     error: Optional[str] = None
-    progress: str = ""
+    progress: Optional[Dict[str, Any]] = None  # structured progress for the client
 
 
 class JobStore:

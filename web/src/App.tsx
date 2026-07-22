@@ -2,11 +2,16 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import MapView, { BASEMAPS } from "./components/MapView";
 import ResultsPanel, { MetricKey } from "./components/ResultsPanel";
-import { api, BBox, ExtractResult } from "./api";
+import TimeSeriesPanel from "./components/TimeSeriesPanel";
+import { api, BBox, ExtractResult, TimeseriesResult } from "./api";
 
 const YAMAL: BBox = [64, 63, 90, 74];
 const METRIC_LABELS: [MetricKey, string][] = [
   ["area", "Area"], ["perimeter", "Perimeter"], ["fractal", "Fractal dimension"], ["size_dist", "Size distribution"],
+];
+const CADENCES: [string, string][] = [
+  ["none", "None — single composite"], ["annual", "Annual"],
+  ["seasonal", "Seasonal (quarterly)"], ["monthly", "Monthly"],
 ];
 
 export default function App() {
@@ -15,23 +20,34 @@ export default function App() {
   const [drawing, setDrawing] = useState(false);
   const [datetime, setDatetime] = useState("2023-06-15/2023-09-10");
   const [sensor, setSensor] = useState("sentinel-2");
+  const [cadence, setCadence] = useState("none");
   const [minArea, setMinArea] = useState(2000);
   const [strategy, setStrategy] = useState("seeded");
 
   const [extract, setExtract] = useState<ExtractResult | null>(null);
   const [sheetIdx, setSheetIdx] = useState(0);
+  const [satFrameIdx, setSatFrameIdx] = useState(0);
   const [histOpacity, setHistOpacity] = useState(0.85);
   const [compOpacity, setCompOpacity] = useState(1);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [tsJobId, setTsJobId] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<Set<MetricKey>>(new Set(["area", "perimeter", "fractal", "size_dist"]));
 
   // footprints for the whole region (loaded once)
   const footprints = useQuery({ queryKey: ["footprints"], queryFn: () => api.footprints(YAMAL) });
 
   const extractMut = useMutation({
-    mutationFn: () => api.extract({ bbox: roi!, datetime, sensor }),
-    onSuccess: (r) => { setExtract(r); setSheetIdx(0); },
+    mutationFn: (c: string) => api.extract({ bbox: roi!, datetime, sensor, cadence: c }),
+    onSuccess: (r) => { setExtract(r); setSheetIdx(0); setSatFrameIdx(0); },
   });
+
+  // Flip the satellite time-granularity. Re-runs extract with the new cadence if
+  // we've already extracted once (composites are cached server-side, so toggling
+  // back to a cadence already built is near-instant).
+  const onCadence = (c: string) => {
+    setCadence(c); setSatFrameIdx(0);
+    if (roi && extract) extractMut.mutate(c);
+  };
 
   const segMut = useMutation({
     mutationFn: () => api.segment({ bbox: roi!, datetime, sensor, strategy, min_area_m2: minArea }),
@@ -48,13 +64,52 @@ export default function App() {
     },
   });
 
+  const tsMut = useMutation({
+    mutationFn: (c: string) =>
+      api.segmentTimeseries({ bbox: roi!, datetime, sensor, cadence: c, strategy, min_area_m2: minArea }),
+    onSuccess: (r) => setTsJobId(r.job_id),
+  });
+
+  // Poll the time-series job often so the progress bar / ETA update smoothly.
+  const tsJob = useQuery({
+    queryKey: ["tsjob", tsJobId],
+    queryFn: () => api.job<TimeseriesResult>(tsJobId!),
+    enabled: !!tsJobId,
+    refetchInterval: (q) => {
+      const st = q.state.data?.status;
+      return st === "done" || st === "error" ? false : 800;
+    },
+  });
+
   const sheets = useMemo(
     () => (extract?.historic_sheets || []).slice().sort((a, b) => (a.year || 0) - (b.year || 0)),
     [extract],
   );
   const sheet = sheets[Math.min(sheetIdx, Math.max(0, sheets.length - 1))] || null;
+
+  // satellite time-series frames (empty when cadence = none)
+  const frames = extract?.satellite_frames || [];
+  const satFrame = frames[Math.min(satFrameIdx, Math.max(0, frames.length - 1))] || null;
+  const stepping = !!extract && extract.cadence !== "none";
+  const satTileUrl = !extract ? null : stepping ? satFrame?.tile_url ?? null : extract.tile_url;
+  const satScenes = !extract ? null : stepping ? satFrame?.n_scenes ?? null : extract.n_scenes;
+
   const result = job.data?.status === "done" ? job.data.result : null;
-  const lakes = result?.lakes_geojson || null;
+
+  // time-series segmentation: a run in flight or complete
+  const tsActive = !!tsJobId;
+  const tsResult = tsJob.data?.status === "done" ? tsJob.data.result : null;
+  const tsEntry = tsResult ? tsResult.series[Math.min(satFrameIdx, tsResult.series.length - 1)] : null;
+
+  // map lake overlay: the selected frame's lakes when a time-series run is done,
+  // otherwise the single whole-range segmentation result.
+  const lakes = tsResult ? (tsEntry?.lakes_geojson ?? null) : (result?.lakes_geojson || null);
+
+  // jump the satellite slider (and thus the map) to a label picked in a chart
+  const pickLabel = (label: string) => {
+    const i = frames.findIndex((f) => f.label === label);
+    if (i >= 0) setSatFrameIdx(i);
+  };
 
   const toggleMetric = (k: MetricKey) =>
     setMetrics((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
@@ -65,7 +120,7 @@ export default function App() {
   };
 
   return (
-    <div className={`app${result ? " with-results" : ""}`}>
+    <div className={`app${result || tsActive ? " with-results" : ""}`}>
       <aside className="sidebar">
         <div className="brand"><span className="dot" /><h1>Tundra Map Portal</h1></div>
         <div className="sub">Historic maps × modern satellite — Arctic lake change</div>
@@ -105,7 +160,7 @@ export default function App() {
           <label className="field">Date range
             <input value={datetime} onChange={(e) => setDatetime(e.target.value)} />
           </label>
-          <button className="primary" disabled={!roi || extractMut.isPending} onClick={() => extractMut.mutate()}>
+          <button className="primary" disabled={!roi || extractMut.isPending} onClick={() => extractMut.mutate(cadence)}>
             {extractMut.isPending ? <><span className="spinner" />Extracting…</> : "Extract imagery + maps"}
           </button>
           {extractMut.isError && <div className="status err">{String(extractMut.error).slice(0, 160)}</div>}
@@ -114,7 +169,25 @@ export default function App() {
         {extract && (
           <>
             <div className="group">
-              <label className="h">Satellite composite {extract.n_scenes ? `(${extract.n_scenes} scenes)` : ""}</label>
+              <label className="h">Satellite over time {satScenes ? `(${satScenes} scenes)` : ""}</label>
+              <label className="field">Step by
+                <select value={cadence} onChange={(e) => onCadence(e.target.value)} disabled={extractMut.isPending}>
+                  {CADENCES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+              </label>
+              {stepping && frames.length > 0 && (
+                <>
+                  <div className="slider-row">
+                    <input type="range" min={0} max={frames.length - 1} step={1} value={Math.min(satFrameIdx, frames.length - 1)} onChange={(e) => setSatFrameIdx(+e.target.value)} />
+                    <span className="val">{Math.min(satFrameIdx, frames.length - 1) + 1}/{frames.length}</span>
+                  </div>
+                  <div className="hint">
+                    {satFrame?.label}
+                    {satFrame && satFrame.tile_url === null ? " — no clear scenes" : ""}
+                  </div>
+                </>
+              )}
+              {extractMut.isPending && cadence !== "none" && <div className="status run">Building composites…</div>}
               <div className="slider-row">
                 <span className="hint">opacity</span>
                 <input type="range" min={0} max={1} step={0.05} value={compOpacity} onChange={(e) => setCompOpacity(+e.target.value)} />
@@ -152,12 +225,26 @@ export default function App() {
                 </label>
               </div>
               <button className="primary" disabled={!roi || segMut.isPending || job.data?.status === "running" || job.data?.status === "queued"}
-                onClick={() => { setJobId(null); segMut.mutate(); }}>
+                onClick={() => { setTsJobId(null); setJobId(null); segMut.mutate(); }}>
                 {job.data && (job.data.status === "running" || job.data.status === "queued")
                   ? <><span className="spinner" />Segmenting…</> : "Detect lakes"}
               </button>
               {job.data?.status === "running" && <div className="status run">Running SAM on GPU…</div>}
               {job.data?.status === "error" && <div className="status err">{String(job.data.error).slice(0, 200)}</div>}
+
+              {stepping && frames.length > 0 && (
+                <>
+                  <button className="primary" style={{ marginTop: 8 }}
+                    disabled={!roi || tsJob.data?.status === "running" || tsJob.data?.status === "queued"}
+                    onClick={() => { setJobId(null); setTsJobId(null); tsMut.mutate(cadence); }}>
+                    {tsJob.data && (tsJob.data.status === "running" || tsJob.data.status === "queued")
+                      ? <><span className="spinner" />Segmenting {tsJob.data.progress?.done ?? 0}/{tsJob.data.progress?.total ?? frames.length}…</>
+                      : `Detect over time (${frames.length} steps)`}
+                  </button>
+                  <div className="hint">Runs SAM on each time step and charts the change.</div>
+                  {tsMut.isError && <div className="status err">{String(tsMut.error).slice(0, 200)}</div>}
+                </>
+              )}
               <div className="checks">
                 {METRIC_LABELS.map(([k, label]) => (
                   <label key={k}><input type="checkbox" checked={metrics.has(k)} onChange={() => toggleMetric(k)} />{label}</label>
@@ -184,7 +271,7 @@ export default function App() {
           roi={roi}
           drawing={drawing}
           onRoiChange={(b) => { setRoi(b); setDrawing(false); }}
-          compositeTileUrl={extract?.tile_url || null}
+          compositeTileUrl={satTileUrl || null}
           compositeOpacity={compOpacity}
           historicSheet={sheet}
           historicOpacity={histOpacity}
@@ -195,7 +282,16 @@ export default function App() {
         )}
       </div>
 
-      {result && <ResultsPanel result={result} metrics={metrics} />}
+      {tsActive
+        ? <TimeSeriesPanel
+            status={tsJob.data?.status ?? "queued"}
+            progress={tsJob.data?.progress}
+            result={tsResult}
+            cadence={cadence}
+            selectedLabel={satFrame?.label ?? null}
+            onPickLabel={pickLabel}
+          />
+        : result && <ResultsPanel result={result} metrics={metrics} />}
     </div>
   );
 }
