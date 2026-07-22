@@ -20,8 +20,8 @@ body {
   font-size: 14px;
 }
 
-.app { display: grid; grid-template-columns: 370px 1fr; height: 100vh; }
-.app.with-results { grid-template-columns: 370px 1fr 380px; }
+.app { display: grid; grid-template-columns: 400px 1fr; height: 100vh; }
+.app.with-results { grid-template-columns: 400px 1fr 380px; }
 
 /* Sidebar */
 .sidebar {
