@@ -53,6 +53,8 @@ input, select, button {
   font-family: inherit;
 }
 input:focus, select:focus { outline: none; border-color: var(--accent-2); }
+/* dark-theme the native date picker (calendar popup + picker icon) */
+input[type="date"] { color-scheme: dark; }
 label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 
 button {

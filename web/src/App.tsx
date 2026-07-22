@@ -21,7 +21,9 @@ export default function App() {
   const [basemap, setBasemap] = useState("USGS Imagery");
   const [roi, setRoi] = useState<BBox | null>(null);
   const [drawing, setDrawing] = useState(false);
-  const [datetime, setDatetime] = useState("2023-06-15/2023-09-10");
+  const [startDate, setStartDate] = useState("2023-06-15");
+  const [endDate, setEndDate] = useState("2023-09-10");
+  const datetime = `${startDate}/${endDate}`;  // API expects "YYYY-MM-DD/YYYY-MM-DD"
   const [sensor, setSensor] = useState("sentinel-2");
   const [cadence, setCadence] = useState("none");
   const [minArea, setMinArea] = useState(2000);
@@ -189,9 +191,16 @@ export default function App() {
               </select>
             </label>
           </div>
-          <label className="field">Date range
-            <input value={datetime} onChange={(e) => setDatetime(e.target.value)} />
-          </label>
+          <div className="row">
+            <label className="field">Begin date
+              <input type="date" value={startDate} max={endDate}
+                onChange={(e) => setStartDate(e.target.value)} />
+            </label>
+            <label className="field">End date
+              <input type="date" value={endDate} min={startDate}
+                onChange={(e) => setEndDate(e.target.value)} />
+            </label>
+          </div>
           <button className="primary" disabled={!roi || extracting}
             onClick={() => { setExtractJobId(null); extractMut.mutate(cadence); }}>
             {extracting ? <><span className="spinner" />Extracting…</> : "Extract imagery + maps"}
