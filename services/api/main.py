@@ -240,8 +240,11 @@ def _run_extract(job: Job, req: ExtractReq, cadence: str,
                          f"Compositing scene {done}/{total} "
                          f"({p['used']} clear so far)…",
                          100.0 * done / total if total else 0.0, eta)
+            # display composite only needs RGB — skip nir/swir (segmentation
+            # rebuilds those bands separately when it runs)
             comp = imagery.composite(tuple(req.bbox), req.datetime, sensor=req.sensor,
-                                     res=req.res, on_progress=cb)
+                                     res=req.res, bands=("red", "green", "blue"),
+                                     on_progress=cb)
             imagery.write_cog(comp, cpath, bands=("red", "green", "blue"))
             n_scenes = comp.n_scenes
         _publish("done", "Composite ready.", 100.0, 0.0)
@@ -280,7 +283,8 @@ def _run_extract(job: Job, req: ExtractReq, cadence: str,
 
         try:
             comp = imagery.composite(tuple(req.bbox), dtr, sensor=req.sensor,
-                                     res=req.res, on_progress=cb)
+                                     res=req.res, bands=("red", "green", "blue"),
+                                     on_progress=cb)
             imagery.write_cog(comp, cpath, bands=("red", "green", "blue"))
             frames.append({"label": label, "datetime": dtr,
                            "tile_url": tile_url(cpath) + RESCALE,

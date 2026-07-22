@@ -17,6 +17,7 @@ Design choice (per project): lightweight rasterio windowed reads, no xarray/dask
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -32,6 +33,10 @@ import pystac_client
 import planetary_computer
 
 PC_STAC = "https://planetarycomputer.microsoft.com/api/stac/v1"
+
+# Scene reads are network-bound (/vsicurl over HTTPS), so composite them in
+# parallel. Bounded to avoid exhausting sockets / memory on large ROIs.
+_COMPOSITE_WORKERS = int(os.environ.get("TUNDRA_COMPOSITE_WORKERS", "8"))
 
 # GDAL options for efficient remote COG reads over /vsicurl.
 _GDAL_ENV = dict(
@@ -125,13 +130,36 @@ def _cloud_mask(item, sensor, dst_crs, transform, width, height) -> np.ndarray:
         return keep
 
 
+def _process_scene(it, sensor, dst_crs, transform, width, height, bands, cfg):
+    """Read + cloud-mask one scene's bands over the network. Returns a
+    ``{band: masked reflectance array}`` dict, or ``None`` if the scene is
+    essentially cloudy over the ROI. Runs in a worker thread, so it opens its
+    own GDAL environment (rasterio.Env is thread-local)."""
+    with rasterio.Env(**_GDAL_ENV):
+        clear = _cloud_mask(it, sensor, dst_crs, transform, width, height)
+        if clear.mean() < 0.02:              # scene essentially cloudy over ROI
+            return None
+        out = {}
+        for b in bands:
+            href = it.assets[cfg["bands"][b]].href
+            arr = _read_band(href, dst_crs, transform, width, height)
+            arr = arr * cfg["scale"] + cfg["offset"]         # -> reflectance
+            arr[~clear] = np.nan
+            arr[(arr < -0.1) | (arr > 1.6)] = np.nan           # sanity clip
+            out[b] = arr
+        return out
+
+
 def composite(bbox, datetime, sensor="sentinel-2", res=None, dst_crs="EPSG:3857",
               bands=("blue", "green", "red", "nir", "swir16"),
               max_cloud=20, max_items=25, on_progress=None) -> Composite:
     """Cloud-free per-pixel median composite over bbox/date for the given sensor.
 
+    Scenes are read concurrently (``TUNDRA_COMPOSITE_WORKERS`` threads), since the
+    work is dominated by HTTPS range reads over /vsicurl.
+
     ``on_progress``: optional callback invoked with a dict describing the current
-    stage — ``{"stage": "search"}`` before the STAC query, then per candidate
+    stage — ``{"stage": "search"}`` before the STAC query, then per completed
     scene ``{"stage": "compose", "done": i, "total": n, "used": k}`` — so callers
     can surface a progress bar / ETA over the network-bound work.
     """
@@ -148,27 +176,25 @@ def composite(bbox, datetime, sensor="sentinel-2", res=None, dst_crs="EPSG:3857"
 
     stacks = {b: [] for b in bands}
     n_used = 0
+    done = 0
     total = len(items)
-    with rasterio.Env(**_GDAL_ENV):
-        for i, it in enumerate(items):
+    workers = max(1, min(_COMPOSITE_WORKERS, total))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(_process_scene, it, sensor, dst, transform, width,
+                            height, bands, cfg) for it in items]
+        for fut in as_completed(futs):
+            done += 1
             try:
-                clear = _cloud_mask(it, sensor, dst, transform, width, height)
-                if clear.mean() < 0.02:      # scene essentially cloudy over ROI
-                    continue
-                for b in bands:
-                    href = it.assets[cfg["bands"][b]].href
-                    arr = _read_band(href, dst, transform, width, height)
-                    arr = arr * cfg["scale"] + cfg["offset"]     # -> reflectance
-                    arr[~clear] = np.nan
-                    arr[(arr < -0.1) | (arr > 1.6)] = np.nan       # sanity clip
-                    stacks[b].append(arr)
-                n_used += 1
+                res_bands = fut.result()
             except Exception:
-                continue
-            finally:
-                if on_progress:
-                    on_progress({"stage": "compose", "done": i + 1, "total": total,
-                                 "used": n_used})
+                res_bands = None
+            if res_bands is not None:
+                for b in bands:
+                    stacks[b].append(res_bands[b])
+                n_used += 1
+            if on_progress:
+                on_progress({"stage": "compose", "done": done, "total": total,
+                             "used": n_used})
 
     if n_used == 0:
         raise ValueError("All candidate scenes were too cloudy over the ROI.")
