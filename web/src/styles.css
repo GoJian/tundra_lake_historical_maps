@@ -20,8 +20,8 @@ body {
   font-size: 14px;
 }
 
-.app { display: grid; grid-template-columns: 340px 1fr; height: 100vh; }
-.app.with-results { grid-template-columns: 340px 1fr 380px; }
+.app { display: grid; grid-template-columns: 370px 1fr; height: 100vh; }
+.app.with-results { grid-template-columns: 370px 1fr 380px; }
 
 /* Sidebar */
 .sidebar {
@@ -111,3 +111,6 @@ table.lakes th { color: var(--muted); font-weight: 600; }
 .progress-track { height: 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); overflow: hidden; }
 .progress-fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.4s ease; }
 .progress-fill.anim { background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
+
+/* ready-to-draw cursor: overrides MapLibre's inline drag cursor while drawing */
+.map.drawing canvas { cursor: crosshair !important; }

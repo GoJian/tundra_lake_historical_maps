@@ -104,7 +104,10 @@ export default function MapView(props: Props) {
         });
         popup.setLngLat(e.lngLat).setHTML(`<b>${feats.length} sheet(s)</b><br>${lines.join("<br>")}`).addTo(m);
       });
-      m.on("mouseleave", "footprints-fill", () => { m.getCanvas().style.cursor = ""; popup.remove(); });
+      m.on("mouseleave", "footprints-fill", () => {
+        if (!draw.current.on) m.getCanvas().style.cursor = "";  // keep the draw cursor while drawing
+        popup.remove();
+      });
 
       // rectangle-drag ROI selection
       m.on("mousedown", (e) => {
@@ -185,14 +188,16 @@ export default function MapView(props: Props) {
   }, [props.historicSheet]);
   useEffect(() => { withMap((m) => m.setPaintProperty("historic", "raster-opacity", props.historicOpacity)); }, [props.historicOpacity]);
 
-  // toggle drag-pan when entering/leaving draw mode
+  // toggle drag-pan when entering/leaving draw mode. The ready-to-draw crosshair
+  // is applied via the `drawing` class on the container (CSS !important beats the
+  // inline cursor MapLibre's own drag handlers set), so it can't flicker away.
   useEffect(() => {
     withMap((m) => {
       draw.current.on = props.drawing;
-      if (props.drawing) { m.dragPan.disable(); m.getCanvas().style.cursor = "crosshair"; }
+      if (props.drawing) m.dragPan.disable();
       else { m.dragPan.enable(); m.getCanvas().style.cursor = ""; }
     });
   }, [props.drawing]);
 
-  return <div className="map" ref={el} />;
+  return <div className={`map${props.drawing ? " drawing" : ""}`} ref={el} />;
 }
