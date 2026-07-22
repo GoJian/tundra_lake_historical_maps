@@ -81,6 +81,8 @@ export interface JobProgress {
   done: number;
   total: number;
   current: string;
+  message?: string;         // sub-frame stage, e.g. "Step 2/5 (2021): detecting lakes (SAM)…"
+  pct?: number;             // 0–100 overall (includes within-frame progress)
   elapsed_s: number;
   eta_s: number | null;
   series: { label: string; n_scenes: number; summary: SegmentSummary | null }[];

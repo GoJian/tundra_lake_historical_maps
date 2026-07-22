@@ -331,12 +331,15 @@ def extract(req: ExtractReq):
     return {"job_id": job.id, "status": job.status}
 
 
-def _run_segment(req: SegmentReq):
+def _run_segment(req: SegmentReq, on_progress=None):
     from utils import imagery
     from utils.segment import segment_water
     from utils.metrics import lake_metrics
 
-    comp = imagery.composite(tuple(req.bbox), req.datetime, sensor=req.sensor, res=req.res)
+    comp = imagery.composite(tuple(req.bbox), req.datetime, sensor=req.sensor,
+                             res=req.res, on_progress=on_progress)
+    if on_progress:
+        on_progress({"stage": "sam", "done": 0, "total": 0})
     prior = imagery.water_mask(comp, req.water_index, 0.0)
     rgb = comp.rgb(stretch=0.28)
     seg = segment_water(rgb, water_prior=prior, strategy=req.strategy,
@@ -369,30 +372,45 @@ def segment(req: SegmentReq):
 
 
 def _run_timeseries(job: Job, req: SegmentReq, wins: List[Tuple[str, str]]):
-    """Segment each cadence time-step in turn, publishing per-frame progress and
-    an ETA so the client can render a progress bar and a change-over-time chart."""
+    """Segment each cadence time-step in turn, publishing sub-frame progress (per
+    step: compositing scenes, then SAM) and a global ETA — a single step can take
+    minutes, so without intra-frame feedback the client looks frozen — plus the
+    running series for the change-over-time chart."""
     import time
     total = len(wins)
     t0 = time.time()
+    series: List[dict] = []
 
-    def _snapshot(done: int, current: str, series: List[dict]):
+    def _publish(done: int, current: str, message: str, inner: float):
+        """done = completed frames; inner = 0..1 progress within the current one."""
+        overall = min(1.0, (done + inner) / total) if total else 0.0
         elapsed = time.time() - t0
-        eta = (elapsed / done) * (total - done) if done else None
+        eta = elapsed * (1 - overall) / overall if overall > 0 else None
         # light series (drop geojson) so polling stays cheap while running
         job.progress = {
-            "done": done, "total": total, "current": current,
+            "done": done, "total": total, "current": current, "message": message,
+            "pct": round(100 * overall, 1),
             "elapsed_s": round(elapsed, 1),
             "eta_s": round(eta, 1) if eta is not None else None,
             "series": [{"label": s["label"], "n_scenes": s["n_scenes"],
                         "summary": s["summary"]} for s in series],
         }
 
-    _snapshot(0, wins[0][0], [])
-    series: List[dict] = []
+    _publish(0, wins[0][0], "Starting…", 0.0)
     for i, (label, dtr) in enumerate(wins):
-        job.progress = {**job.progress, "current": label}  # mark in-flight
+        def cb(p, i=i, label=label):
+            head = f"Step {i + 1}/{total} ({label})"
+            if p["stage"] == "search":
+                _publish(i, label, f"{head}: searching catalog…", 0.02)
+            elif p["stage"] == "compose":
+                d, t = p["done"], p["total"]
+                _publish(i, label, f"{head}: compositing scene {d}/{t}…",
+                         0.6 * (d / t) if t else 0.0)   # compositing ≈ first 60%
+            elif p["stage"] == "sam":
+                _publish(i, label, f"{head}: detecting lakes (SAM)…", 0.65)
+
         try:
-            r = _run_segment(req.model_copy(update={"datetime": dtr}))
+            r = _run_segment(req.model_copy(update={"datetime": dtr}), on_progress=cb)
             entry = {"label": label, "datetime": dtr, "n_scenes": r["n_scenes"],
                      "summary": r["summary"], "lakes_geojson": r["lakes_geojson"],
                      "error": None}
@@ -400,7 +418,7 @@ def _run_timeseries(job: Job, req: SegmentReq, wins: List[Tuple[str, str]]):
             entry = {"label": label, "datetime": dtr, "n_scenes": 0, "summary": None,
                      "lakes_geojson": None, "error": str(e)[:200]}
         series.append(entry)
-        _snapshot(i + 1, label, series)
+        _publish(i + 1, label, f"Step {i + 1}/{total} done", 0.0)
     return {"cadence": req.cadence, "series": series}
 
 

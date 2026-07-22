@@ -282,9 +282,16 @@ export default function App() {
                     onClick={() => { setJobId(null); setTsJobId(null); tsMut.mutate(cadence); }}>
                     {tsJob.data && (tsJob.data.status === "running" || tsJob.data.status === "queued")
                       ? <><span className="spinner" />Segmenting {tsJob.data.progress?.done ?? 0}/{tsJob.data.progress?.total ?? frames.length}…</>
-                      : `Detect over time (${frames.length} steps)`}
+                      : `Detect over time (${frames.length} step${frames.length === 1 ? "" : "s"})`}
                   </button>
-                  <div className="hint">Runs SAM on each time step and charts the change.</div>
+                  <div className="hint">
+                    Runs SAM on each time step and charts the change. Each step takes a while (SAM on the GPU).
+                  </div>
+                  {frames.length === 1 && (
+                    <div className="hint" style={{ color: "var(--accent-2)" }}>
+                      Only 1 time step for this range — widen the date range (or pick a finer cadence) to see a trend.
+                    </div>
+                  )}
                   {tsMut.isError && <div className="status err">{String(tsMut.error).slice(0, 200)}</div>}
                 </>
               )}

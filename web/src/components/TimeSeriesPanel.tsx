@@ -45,7 +45,9 @@ export default function TimeSeriesPanel({
 
   const done = progress?.done ?? (result ? data.length : 0);
   const total = progress?.total ?? data.length;
-  const pct = total ? Math.round((done / total) * 100) : 0;
+  // prefer the server's overall pct (includes within-frame progress) so the bar
+  // moves during a long single step instead of sitting at 0%
+  const pct = progress?.pct ?? (total ? Math.round((done / total) * 100) : 0);
   const running = status === "running" || status === "queued";
 
   const tooltipStyle = { background: "#1e293b", border: `1px solid ${GRID}`, borderRadius: 8, color: "#e2e8f0", fontSize: 12 };
@@ -64,7 +66,7 @@ export default function TimeSeriesPanel({
         <div className="ts-progress-head">
           <span>
             {running
-              ? `Segmenting ${done}/${total} · ${progress?.current ?? ""}`
+              ? (progress?.message ?? `Segmenting ${done}/${total}…`)
               : status === "error" ? "Run failed" : `Done · ${total} time steps`}
           </span>
           {running && <span className="hint">~{fmtEta(progress?.eta_s)} left</span>}
