@@ -121,6 +121,20 @@ export default function App() {
   );
   const sheet = sheets[Math.min(sheetIdx, Math.max(0, sheets.length - 1))] || null;
 
+  // How many time steps the current cadence + date range implies (computed
+  // client-side so we can warn before running — mirrors the backend windowing).
+  const estSteps = useMemo(() => {
+    if (cadence === "none") return 1;
+    const s = new Date(startDate), e = new Date(endDate);
+    if (isNaN(+s) || isNaN(+e) || e < s) return 0;
+    const [sy, sm] = [s.getUTCFullYear(), s.getUTCMonth()];
+    const [ey, em] = [e.getUTCFullYear(), e.getUTCMonth()];
+    if (cadence === "annual") return ey - sy + 1;
+    if (cadence === "monthly") return (ey - sy) * 12 + (em - sm) + 1;
+    return (ey - sy) * 4 + (Math.floor(em / 3) - Math.floor(sm / 3)) + 1; // seasonal
+  }, [cadence, startDate, endDate]);
+  const MANY_STEPS = 24;  // warn (don't block) beyond this
+
   // satellite time-series frames (empty when cadence = none)
   const frames = extract?.satellite_frames || [];
   const satFrame = frames[Math.min(satFrameIdx, Math.max(0, frames.length - 1))] || null;
@@ -183,6 +197,13 @@ export default function App() {
 
         <div className="group">
           <label className="h">Imagery</label>
+          <div className="hint">
+            Satellite scenes are streamed live from the{" "}
+            <a href="https://planetarycomputer.microsoft.com" target="_blank" rel="noreferrer">
+              Microsoft Planetary Computer
+            </a>{" "}
+            (Sentinel-2 / Landsat, hosted on Azure). Historic maps are stored locally.
+          </div>
           <div className="row">
             <label className="field">Sensor
               <select value={sensor} onChange={(e) => setSensor(e.target.value)}>
@@ -228,6 +249,13 @@ export default function App() {
                   {CADENCES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </label>
+              {cadence !== "none" && estSteps > MANY_STEPS && (
+                <div className="hint" style={{ color: "var(--accent-2)" }}>
+                  ⚠ ~{estSteps} time steps for this range — building all composites
+                  will take a while (each is a separate download; they're cached
+                  after). Narrow the range or pick a coarser cadence to speed it up.
+                </div>
+              )}
               {stepping && frames.length > 0 && (
                 <>
                   <div className="slider-row">
@@ -299,6 +327,13 @@ export default function App() {
                   {frames.length === 1 && (
                     <div className="hint" style={{ color: "var(--accent-2)" }}>
                       Only 1 time step for this range — widen the date range (or pick a finer cadence) to see a trend.
+                    </div>
+                  )}
+                  {frames.length > MANY_STEPS && (
+                    <div className="hint" style={{ color: "var(--accent-2)" }}>
+                      ⚠ {frames.length} SAM passes — this can take a very long time
+                      (potentially hours) and holds the GPU for the whole run. Fine to
+                      proceed if you're willing to wait.
                     </div>
                   )}
                   {tsMut.isError && <div className="status err">{String(tsMut.error).slice(0, 200)}</div>}

@@ -230,7 +230,8 @@ def _run_extract(job: Job, req: ExtractReq, cadence: str,
             def cb(p):
                 if p["stage"] == "search":
                     _publish("search",
-                             f"Searching Planetary Computer for {req.sensor} scenes…",
+                             f"Searching Microsoft Planetary Computer for "
+                             f"{req.sensor} scenes…",
                              1.0, None)
                     return
                 done, total = p["done"], p["total"]
@@ -275,7 +276,8 @@ def _run_extract(job: Job, req: ExtractReq, cadence: str,
             el = time.time() - t0
             eta = el * (1 - frac) / frac if frac > 0 else None
             if p["stage"] == "search":
-                msg = f"Time step {fi + 1}/{n} ({label}): searching catalog…"
+                msg = (f"Time step {fi + 1}/{n} ({label}): "
+                       "searching Microsoft Planetary Computer…")
             else:
                 msg = (f"Time step {fi + 1}/{n} ({label}): compositing "
                        f"{p['done']}/{p['total']}…")
@@ -323,8 +325,8 @@ def extract(req: ExtractReq):
         if len(wins) > config.MAX_SATELLITE_FRAMES:
             raise HTTPException(
                 413, f"{len(wins)} time steps exceed the "
-                f"{config.MAX_SATELLITE_FRAMES}-frame limit; narrow the date range "
-                "or use a coarser cadence")
+                f"{config.MAX_SATELLITE_FRAMES}-step safety ceiling; narrow the date "
+                "range or use a coarser cadence (or raise TUNDRA_MAX_SAT_FRAMES)")
 
     job = STORE.create()
     STORE.run(job, lambda j: _run_extract(j, req, cadence, wins), serialize_gpu=False)
@@ -401,7 +403,8 @@ def _run_timeseries(job: Job, req: SegmentReq, wins: List[Tuple[str, str]]):
         def cb(p, i=i, label=label):
             head = f"Step {i + 1}/{total} ({label})"
             if p["stage"] == "search":
-                _publish(i, label, f"{head}: searching catalog…", 0.02)
+                _publish(i, label,
+                         f"{head}: searching Microsoft Planetary Computer…", 0.02)
             elif p["stage"] == "compose":
                 d, t = p["done"], p["total"]
                 _publish(i, label, f"{head}: compositing scene {d}/{t}…",
