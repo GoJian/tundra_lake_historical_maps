@@ -119,3 +119,40 @@ table.lakes th { color: var(--muted); font-weight: 600; }
 
 .hint a { color: var(--accent); text-decoration: none; }
 .hint a:hover { text-decoration: underline; }
+
+/* Tabs */
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--border); }
+.tab { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 10px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.tab:hover { color: var(--text); border-bottom-color: var(--border); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-body { display: flex; flex-direction: column; gap: 18px; }
+
+/* Home / About tab */
+.home { display: flex; flex-direction: column; gap: 14px; }
+.home-lead { font-size: 13px; line-height: 1.5; color: var(--text); margin: 0; }
+.home-cards { display: flex; flex-direction: column; gap: 8px; }
+.home-card { display: flex; gap: 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+.home-card .hc-n { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #072a30; font-weight: 700; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+.home-card b { font-size: 13px; }
+.home-card p { margin: 2px 0 0; font-size: 12px; color: var(--muted); line-height: 1.4; }
+.home-note { font-size: 12px; color: var(--muted); line-height: 1.5; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+
+/* Year browser */
+.browse { display: flex; flex-direction: column; gap: 8px; }
+.browse-year { display: flex; align-items: center; gap: 6px; }
+.browse-year button { padding: 6px 10px; background: var(--panel-2); }
+.browse-year button:disabled { color: var(--border); cursor: not-allowed; }
+.browse-label { flex: 1; text-align: center; }
+.browse-label .by-year { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* Two-year side-by-side compare (overlays the map area) */
+.compare { position: absolute; inset: 0; z-index: 10; background: var(--bg); display: flex; flex-direction: column; }
+.compare-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel); font-size: 14px; }
+.compare-body { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; min-height: 0; background: var(--border); }
+.cmp-pane { margin: 0; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
+.cmp-pane figcaption { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.cmp-pane .cmp-side { font-weight: 700; color: var(--accent); }
+.cmp-pane img { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
+.cmp-nodata { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
+.compare-foot { padding: 8px 14px; border-top: 1px solid var(--border); background: var(--panel); }
+@media (max-width: 900px) { .compare-body { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; } }

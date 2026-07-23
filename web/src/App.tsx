@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import MapView, { BASEMAPS } from "./components/MapView";
 import ResultsPanel, { MetricKey } from "./components/ResultsPanel";
 import TimeSeriesPanel from "./components/TimeSeriesPanel";
+import CompareView from "./components/CompareView";
 import { api, BBox, ExtractResult, ExtractProgress, TimeseriesResult } from "./api";
 
 const fmtEta = (s: number | null | undefined) =>
@@ -15,6 +16,12 @@ const METRIC_LABELS: [MetricKey, string][] = [
 const CADENCES: [string, string][] = [
   ["none", "None — single composite"], ["annual", "Annual"],
   ["seasonal", "Seasonal (quarterly)"], ["monthly", "Monthly"],
+];
+
+type Tab = "home" | "region" | "imagery" | "historic" | "lakes";
+const TABS: [Tab, string][] = [
+  ["home", "Home"], ["region", "Region"], ["imagery", "Imagery"],
+  ["historic", "Historic maps"], ["lakes", "Lakes"],
 ];
 
 export default function App() {
@@ -38,6 +45,12 @@ export default function App() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [tsJobId, setTsJobId] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<Set<MetricKey>>(new Set(["area", "perimeter", "fractal", "size_dist"]));
+
+  const [tab, setTab] = useState<Tab>("home");
+  const [playing, setPlaying] = useState(false);          // auto-advance the year browser
+  const [compareOpen, setCompareOpen] = useState(false);  // side-by-side two-year view
+  const [cmpA, setCmpA] = useState(0);
+  const [cmpB, setCmpB] = useState(0);
 
   // footprints for the whole region (loaded once)
   const footprints = useQuery({ queryKey: ["footprints"], queryFn: () => api.footprints(YAMAL) });
@@ -159,6 +172,23 @@ export default function App() {
     if (i >= 0) setSatFrameIdx(i);
   };
 
+  // step the year browser by ±1
+  const stepFrame = (d: number) =>
+    setSatFrameIdx((i) => Math.max(0, Math.min(frames.length - 1, i + d)));
+
+  // auto-advance ("play") through the years while browsing
+  useEffect(() => {
+    if (!playing || frames.length < 2) return;
+    const id = setInterval(() => setSatFrameIdx((i) => (i + 1) % frames.length), 1200);
+    return () => clearInterval(id);
+  }, [playing, frames.length]);
+
+  // default the compare panes to first vs last frame whenever the series changes
+  useEffect(() => {
+    if (frames.length >= 2) { setCmpA(0); setCmpB(frames.length - 1); }
+    else { setCompareOpen(false); }
+  }, [frames.length]);
+
   const toggleMetric = (k: MetricKey) =>
     setMetrics((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
 
@@ -173,188 +203,274 @@ export default function App() {
         <div className="brand"><span className="dot" /><h1>Tundra Map Portal</h1></div>
         <div className="sub">Historic maps × modern satellite — Arctic lake change</div>
 
-        <div className="group">
-          <label className="h">Basemap</label>
-          <select value={basemap} onChange={(e) => setBasemap(e.target.value)}>
-            {Object.keys(BASEMAPS).map((b) => <option key={b}>{b}</option>)}
-          </select>
-        </div>
+        <nav className="tabs">
+          {TABS.map(([k, l]) => (
+            <button key={k} className={`tab${tab === k ? " active" : ""}`} onClick={() => setTab(k)}>{l}</button>
+          ))}
+        </nav>
 
-        <div className="group">
-          <label className="h">Region of interest</label>
-          <button className={drawing ? "primary" : ""} onClick={() => setDrawing((d) => !d)}>
-            {drawing ? "◼ Drawing — drag on map" : "▭ Draw rectangle"}
-          </button>
-          <div className="row">
-            <label className="field">lon min<input type="number" step="0.01" value={roi?.[0] ?? ""} onChange={(e) => onBboxInput(0, +e.target.value)} /></label>
-            <label className="field">lat min<input type="number" step="0.01" value={roi?.[1] ?? ""} onChange={(e) => onBboxInput(1, +e.target.value)} /></label>
-          </div>
-          <div className="row">
-            <label className="field">lon max<input type="number" step="0.01" value={roi?.[2] ?? ""} onChange={(e) => onBboxInput(2, +e.target.value)} /></label>
-            <label className="field">lat max<input type="number" step="0.01" value={roi?.[3] ?? ""} onChange={(e) => onBboxInput(3, +e.target.value)} /></label>
-          </div>
-        </div>
-
-        <div className="group">
-          <label className="h">Imagery</label>
-          <div className="hint">
-            Satellite scenes are streamed live from the{" "}
-            <a href="https://planetarycomputer.microsoft.com" target="_blank" rel="noreferrer">
-              Microsoft Planetary Computer
-            </a>{" "}
-            (Sentinel-2 / Landsat, hosted on Azure). Historic maps are stored locally.
-          </div>
-          <div className="row">
-            <label className="field">Sensor
-              <select value={sensor} onChange={(e) => setSensor(e.target.value)}>
-                <option value="sentinel-2">Sentinel-2 (10 m)</option>
-                <option value="landsat">Landsat (30 m)</option>
-              </select>
-            </label>
-          </div>
-          <div className="row">
-            <label className="field">Begin date
-              <input type="date" value={startDate} max={endDate}
-                onChange={(e) => setStartDate(e.target.value)} />
-            </label>
-            <label className="field">End date
-              <input type="date" value={endDate} min={startDate}
-                onChange={(e) => setEndDate(e.target.value)} />
-            </label>
-          </div>
-          <button className="primary" disabled={!roi || extracting}
-            onClick={() => { setExtractJobId(null); extractMut.mutate(cadence); }}>
-            {extracting ? <><span className="spinner" />Extracting…</> : "Extract imagery + maps"}
-          </button>
-          {extracting && (
-            <div className="ts-progress" style={{ marginTop: 4 }}>
-              <div className="ts-progress-head">
-                <span>{extractProgress?.message ?? "Starting…"}</span>
-                {extractProgress?.eta_s != null && <span className="hint">~{fmtEta(extractProgress.eta_s)} left</span>}
+        <div className="tab-body">
+          {tab === "home" && (
+            <div className="home">
+              <p className="home-lead">
+                A portal for studying how <b>Arctic tundra lakes</b> on the
+                Yamal–Nenets peninsula change over time, by combining{" "}
+                <b>historic Soviet topographic maps</b> with{" "}
+                <b>modern satellite imagery</b>.
+              </p>
+              <div className="home-cards">
+                <div className="home-card"><span className="hc-n">1</span><div><b>Pick a region</b><p>Draw a rectangle on the map to choose your area of interest.</p></div></div>
+                <div className="home-card"><span className="hc-n">2</span><div><b>Browse imagery over the years</b><p>Build annual / seasonal / monthly composites, then step, animate, or compare two years side by side.</p></div></div>
+                <div className="home-card"><span className="hc-n">3</span><div><b>Overlay historic maps</b><p>Fade in datum-corrected Soviet topo sheets to see the historic shoreline.</p></div></div>
+                <div className="home-card"><span className="hc-n">4</span><div><b>Detect lakes &amp; chart change</b><p>Run AI (SAM) lake detection per time step and chart area, count and shape over time.</p></div></div>
               </div>
-              <div className="progress-track">
-                <div className="progress-fill anim" style={{ width: `${extractProgress?.pct ?? 4}%` }} />
+              <div className="home-note">
+                <b>What to expect:</b> satellite imagery is streamed live from the{" "}
+                <a href="https://planetarycomputer.microsoft.com" target="_blank" rel="noreferrer">Microsoft Planetary Computer</a>,
+                so the first extract of a new area takes a little time (it's cached
+                afterward). Historic maps are stored locally.
               </div>
+              <button className="primary" onClick={() => setTab("region")}>Get started →</button>
             </div>
           )}
-          {extractError && <div className="status err">{extractError.slice(0, 160)}</div>}
-        </div>
 
-        {extract && (
-          <>
-            <div className="group">
-              <label className="h">Satellite over time {satScenes ? `(${satScenes} scenes)` : ""}</label>
-              <label className="field">Step by
-                <select value={cadence} onChange={(e) => onCadence(e.target.value)} disabled={extracting}>
-                  {CADENCES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                </select>
-              </label>
-              {cadence !== "none" && estSteps > MANY_STEPS && (
-                <div className="hint" style={{ color: "var(--accent-2)" }}>
-                  ⚠ ~{estSteps} time steps for this range — building all composites
-                  will take a while (each is a separate download; they're cached
-                  after). Narrow the range or pick a coarser cadence to speed it up.
-                </div>
-              )}
-              {stepping && frames.length > 0 && (
-                <>
-                  <div className="slider-row">
-                    <input type="range" min={0} max={frames.length - 1} step={1} value={Math.min(satFrameIdx, frames.length - 1)} onChange={(e) => setSatFrameIdx(+e.target.value)} />
-                    <span className="val">{Math.min(satFrameIdx, frames.length - 1) + 1}/{frames.length}</span>
-                  </div>
-                  <div className="hint">
-                    {satFrame?.label}
-                    {satFrame && satFrame.tile_url === null ? " — no clear scenes" : ""}
-                  </div>
-                </>
-              )}
-              <div className="slider-row">
-                <span className="hint">opacity</span>
-                <input type="range" min={0} max={1} step={0.05} value={compOpacity} onChange={(e) => setCompOpacity(+e.target.value)} />
-                <span className="val">{compOpacity.toFixed(2)}</span>
-              </div>
-            </div>
-
-            {sheets.length > 0 && (
+          {tab === "region" && (
+            <>
               <div className="group">
-                <label className="h">Historic sheet — {sheet?.year ?? "—"}</label>
-                <div className="slider-row">
-                  <input type="range" min={0} max={sheets.length - 1} step={1} value={sheetIdx} onChange={(e) => setSheetIdx(+e.target.value)} />
-                  <span className="val">{sheetIdx + 1}/{sheets.length}</span>
+                <label className="h">Basemap</label>
+                <select value={basemap} onChange={(e) => setBasemap(e.target.value)}>
+                  {Object.keys(BASEMAPS).map((b) => <option key={b}>{b}</option>)}
+                </select>
+              </div>
+              <div className="group">
+                <label className="h">Region of interest</label>
+                <button className={drawing ? "primary" : ""} onClick={() => setDrawing((d) => !d)}>
+                  {drawing ? "◼ Drawing — drag on map" : "▭ Draw rectangle"}
+                </button>
+                <div className="row">
+                  <label className="field">lon min<input type="number" step="0.01" value={roi?.[0] ?? ""} onChange={(e) => onBboxInput(0, +e.target.value)} /></label>
+                  <label className="field">lat min<input type="number" step="0.01" value={roi?.[1] ?? ""} onChange={(e) => onBboxInput(1, +e.target.value)} /></label>
                 </div>
-                <div className="hint">{sheet?.stem}</div>
-                <div className="slider-row">
-                  <span className="hint">opacity</span>
-                  <input type="range" min={0} max={1} step={0.05} value={histOpacity} onChange={(e) => setHistOpacity(+e.target.value)} />
-                  <span className="val">{histOpacity.toFixed(2)}</span>
+                <div className="row">
+                  <label className="field">lon max<input type="number" step="0.01" value={roi?.[2] ?? ""} onChange={(e) => onBboxInput(2, +e.target.value)} /></label>
+                  <label className="field">lat max<input type="number" step="0.01" value={roi?.[3] ?? ""} onChange={(e) => onBboxInput(3, +e.target.value)} /></label>
+                </div>
+                <div className="hint">
+                  Hover a footprint on the map to list overlapping historic sheets
+                  (fill colour = datum status). Then go to the Imagery tab to extract.
                 </div>
               </div>
-            )}
+            </>
+          )}
 
-            <div className="group">
-              <label className="h">Lake detection (SAM)</label>
-              <div className="row">
-                <label className="field">Strategy
-                  <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
-                    <option value="seeded">Seeded (MNDWI + SAM)</option>
-                    <option value="auto">Auto (SAM + filter)</option>
-                  </select>
-                </label>
-                <label className="field">Min area m²
-                  <input type="number" step="500" value={minArea} onChange={(e) => setMinArea(+e.target.value)} />
-                </label>
-              </div>
-              <button className="primary" disabled={!roi || segMut.isPending || job.data?.status === "running" || job.data?.status === "queued"}
-                onClick={() => { setTsJobId(null); setJobId(null); segMut.mutate(); }}>
-                {job.data && (job.data.status === "running" || job.data.status === "queued")
-                  ? <><span className="spinner" />Segmenting…</> : "Detect lakes"}
-              </button>
-              {job.data?.status === "running" && <div className="status run">Running SAM on GPU…</div>}
-              {job.data?.status === "error" && <div className="status err">{String(job.data.error).slice(0, 200)}</div>}
-
-              {stepping && frames.length > 0 && (
-                <>
-                  <button className="primary" style={{ marginTop: 8 }}
-                    disabled={!roi || tsJob.data?.status === "running" || tsJob.data?.status === "queued"}
-                    onClick={() => { setJobId(null); setTsJobId(null); tsMut.mutate(cadence); }}>
-                    {tsJob.data && (tsJob.data.status === "running" || tsJob.data.status === "queued")
-                      ? <><span className="spinner" />Segmenting {tsJob.data.progress?.done ?? 0}/{tsJob.data.progress?.total ?? frames.length}…</>
-                      : `Detect over time (${frames.length} step${frames.length === 1 ? "" : "s"})`}
-                  </button>
-                  <div className="hint">
-                    Runs SAM on each time step and charts the change. Each step takes a while (SAM on the GPU).
+          {tab === "imagery" && (
+            <>
+              <div className="group">
+                <label className="h">Imagery</label>
+                <div className="hint">
+                  Satellite scenes are streamed live from the{" "}
+                  <a href="https://planetarycomputer.microsoft.com" target="_blank" rel="noreferrer">
+                    Microsoft Planetary Computer
+                  </a>{" "}
+                  (Sentinel-2 / Landsat, hosted on Azure). Historic maps are stored locally.
+                </div>
+                <div className="row">
+                  <label className="field">Sensor
+                    <select value={sensor} onChange={(e) => setSensor(e.target.value)}>
+                      <option value="sentinel-2">Sentinel-2 (10 m)</option>
+                      <option value="landsat">Landsat (30 m)</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="row">
+                  <label className="field">Begin date
+                    <input type="date" value={startDate} max={endDate}
+                      onChange={(e) => setStartDate(e.target.value)} />
+                  </label>
+                  <label className="field">End date
+                    <input type="date" value={endDate} min={startDate}
+                      onChange={(e) => setEndDate(e.target.value)} />
+                  </label>
+                </div>
+                {!roi && <div className="hint" style={{ color: "var(--accent-2)" }}>Draw a region first (Region tab).</div>}
+                <button className="primary" disabled={!roi || extracting}
+                  onClick={() => { setExtractJobId(null); extractMut.mutate(cadence); }}>
+                  {extracting ? <><span className="spinner" />Extracting…</> : "Extract imagery + maps"}
+                </button>
+                {extracting && (
+                  <div className="ts-progress" style={{ marginTop: 4 }}>
+                    <div className="ts-progress-head">
+                      <span>{extractProgress?.message ?? "Starting…"}</span>
+                      {extractProgress?.eta_s != null && <span className="hint">~{fmtEta(extractProgress.eta_s)} left</span>}
+                    </div>
+                    <div className="progress-track">
+                      <div className="progress-fill anim" style={{ width: `${extractProgress?.pct ?? 4}%` }} />
+                    </div>
                   </div>
-                  {frames.length === 1 && (
-                    <div className="hint" style={{ color: "var(--accent-2)" }}>
-                      Only 1 time step for this range — widen the date range (or pick a finer cadence) to see a trend.
-                    </div>
-                  )}
-                  {frames.length > MANY_STEPS && (
-                    <div className="hint" style={{ color: "var(--accent-2)" }}>
-                      ⚠ {frames.length} SAM passes — this can take a very long time
-                      (potentially hours) and holds the GPU for the whole run. Fine to
-                      proceed if you're willing to wait.
-                    </div>
-                  )}
-                  {tsMut.isError && <div className="status err">{String(tsMut.error).slice(0, 200)}</div>}
-                </>
-              )}
-              <div className="checks">
-                {METRIC_LABELS.map(([k, label]) => (
-                  <label key={k}><input type="checkbox" checked={metrics.has(k)} onChange={() => toggleMetric(k)} />{label}</label>
-                ))}
+                )}
+                {extractError && <div className="status err">{extractError.slice(0, 160)}</div>}
               </div>
-            </div>
-          </>
-        )}
 
-        <div className="hint" style={{ marginTop: "auto" }}>
-          Hover a footprint to list overlapping historic sheets. Fill colour = datum status.
-        </div>
-        <div className="legend">
-          <span><i style={{ background: "#38bdf8" }} />native WGS84</span>
-          <span><i style={{ background: "#a78bfa" }} />datum-shifted</span>
-          <span><i style={{ background: "#22d3ee" }} />detected lake</span>
+              {extract && (
+                <div className="group">
+                  <label className="h">Browse over time {satScenes ? `(${satScenes} scenes)` : ""}</label>
+                  <label className="field">Step by
+                    <select value={cadence} onChange={(e) => onCadence(e.target.value)} disabled={extracting}>
+                      {CADENCES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                  </label>
+                  {cadence !== "none" && estSteps > MANY_STEPS && (
+                    <div className="hint" style={{ color: "var(--accent-2)" }}>
+                      ⚠ ~{estSteps} time steps for this range — building all composites
+                      will take a while (each is a separate download; they're cached
+                      after). Narrow the range or pick a coarser cadence to speed it up.
+                    </div>
+                  )}
+                  {stepping && frames.length > 0 && (
+                    <div className="browse">
+                      <div className="browse-year">
+                        <button className="ghost" onClick={() => stepFrame(-1)} disabled={satFrameIdx <= 0}>◀</button>
+                        <div className="browse-label">
+                          <div className="by-year">{satFrame?.label ?? "—"}</div>
+                          <div className="hint">
+                            {Math.min(satFrameIdx, frames.length - 1) + 1}/{frames.length}
+                            {satFrame && satFrame.tile_url === null ? " · no clear scenes" : ""}
+                          </div>
+                        </div>
+                        <button className="ghost" onClick={() => stepFrame(1)} disabled={satFrameIdx >= frames.length - 1}>▶</button>
+                        <button className={playing ? "primary" : ""} title="Play / pause"
+                          disabled={frames.length < 2} onClick={() => setPlaying((p) => !p)}>
+                          {playing ? "❚❚" : "►"}
+                        </button>
+                      </div>
+                      <input type="range" min={0} max={frames.length - 1} step={1}
+                        value={Math.min(satFrameIdx, frames.length - 1)} onChange={(e) => setSatFrameIdx(+e.target.value)} />
+                      {frames.length >= 2 && (
+                        <>
+                          <div className="row">
+                            <label className="field">Compare A
+                              <select value={cmpA} onChange={(e) => setCmpA(+e.target.value)}>
+                                {frames.map((f, i) => <option key={i} value={i}>{f.label}</option>)}
+                              </select>
+                            </label>
+                            <label className="field">Compare B
+                              <select value={cmpB} onChange={(e) => setCmpB(+e.target.value)}>
+                                {frames.map((f, i) => <option key={i} value={i}>{f.label}</option>)}
+                              </select>
+                            </label>
+                          </div>
+                          <button onClick={() => setCompareOpen(true)}>
+                            ▥ Compare {frames[cmpA]?.label} vs {frames[cmpB]?.label}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  <div className="slider-row">
+                    <span className="hint">opacity</span>
+                    <input type="range" min={0} max={1} step={0.05} value={compOpacity} onChange={(e) => setCompOpacity(+e.target.value)} />
+                    <span className="val">{compOpacity.toFixed(2)}</span>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {tab === "historic" && (
+            extract && sheets.length > 0 ? (
+              <>
+                <div className="group">
+                  <label className="h">Historic sheet — {sheet?.year ?? "—"}</label>
+                  <div className="slider-row">
+                    <input type="range" min={0} max={sheets.length - 1} step={1} value={sheetIdx} onChange={(e) => setSheetIdx(+e.target.value)} />
+                    <span className="val">{sheetIdx + 1}/{sheets.length}</span>
+                  </div>
+                  <div className="hint">{sheet?.stem}</div>
+                  <div className="slider-row">
+                    <span className="hint">opacity</span>
+                    <input type="range" min={0} max={1} step={0.05} value={histOpacity} onChange={(e) => setHistOpacity(+e.target.value)} />
+                    <span className="val">{histOpacity.toFixed(2)}</span>
+                  </div>
+                </div>
+                <div className="legend">
+                  <span><i style={{ background: "#38bdf8" }} />native WGS84</span>
+                  <span><i style={{ background: "#a78bfa" }} />datum-shifted</span>
+                </div>
+              </>
+            ) : (
+              <div className="hint">
+                {extract
+                  ? "No historic sheets overlap this region."
+                  : "Extract imagery (Imagery tab) to load the historic sheets that overlap your region, then step through them here."}
+              </div>
+            )
+          )}
+
+          {tab === "lakes" && (
+            extract ? (
+              <>
+                <div className="group">
+                  <label className="h">Lake detection (SAM)</label>
+                  <div className="row">
+                    <label className="field">Strategy
+                      <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+                        <option value="seeded">Seeded (MNDWI + SAM)</option>
+                        <option value="auto">Auto (SAM + filter)</option>
+                      </select>
+                    </label>
+                    <label className="field">Min area m²
+                      <input type="number" step="500" value={minArea} onChange={(e) => setMinArea(+e.target.value)} />
+                    </label>
+                  </div>
+                  <button className="primary" disabled={!roi || segMut.isPending || job.data?.status === "running" || job.data?.status === "queued"}
+                    onClick={() => { setTsJobId(null); setJobId(null); segMut.mutate(); }}>
+                    {job.data && (job.data.status === "running" || job.data.status === "queued")
+                      ? <><span className="spinner" />Segmenting…</> : "Detect lakes"}
+                  </button>
+                  {job.data?.status === "running" && <div className="status run">Running SAM on GPU…</div>}
+                  {job.data?.status === "error" && <div className="status err">{String(job.data.error).slice(0, 200)}</div>}
+
+                  {stepping && frames.length > 0 && (
+                    <>
+                      <button className="primary" style={{ marginTop: 8 }}
+                        disabled={!roi || tsJob.data?.status === "running" || tsJob.data?.status === "queued"}
+                        onClick={() => { setJobId(null); setTsJobId(null); tsMut.mutate(cadence); }}>
+                        {tsJob.data && (tsJob.data.status === "running" || tsJob.data.status === "queued")
+                          ? <><span className="spinner" />Segmenting {tsJob.data.progress?.done ?? 0}/{tsJob.data.progress?.total ?? frames.length}…</>
+                          : `Detect over time (${frames.length} step${frames.length === 1 ? "" : "s"})`}
+                      </button>
+                      <div className="hint">
+                        Runs SAM on each time step and charts the change. Each step takes a while (SAM on the GPU).
+                      </div>
+                      {frames.length === 1 && (
+                        <div className="hint" style={{ color: "var(--accent-2)" }}>
+                          Only 1 time step for this range — widen the date range (or pick a finer cadence) to see a trend.
+                        </div>
+                      )}
+                      {frames.length > MANY_STEPS && (
+                        <div className="hint" style={{ color: "var(--accent-2)" }}>
+                          ⚠ {frames.length} SAM passes — this can take a very long time
+                          (potentially hours) and holds the GPU for the whole run. Fine to
+                          proceed if you're willing to wait.
+                        </div>
+                      )}
+                      {tsMut.isError && <div className="status err">{String(tsMut.error).slice(0, 200)}</div>}
+                    </>
+                  )}
+                  <div className="checks">
+                    {METRIC_LABELS.map(([k, label]) => (
+                      <label key={k}><input type="checkbox" checked={metrics.has(k)} onChange={() => toggleMetric(k)} />{label}</label>
+                    ))}
+                  </div>
+                </div>
+                <div className="legend">
+                  <span><i style={{ background: "#22d3ee" }} />detected lake</span>
+                </div>
+              </>
+            ) : (
+              <div className="hint">Extract imagery (Imagery tab) first, then detect lakes and chart their change here.</div>
+            )
+          )}
         </div>
       </aside>
 
@@ -373,6 +489,10 @@ export default function App() {
         />
         {footprints.data && (
           <div className="map-overlay">{footprints.data.features?.length ?? 0} historic sheets loaded</div>
+        )}
+        {compareOpen && frames.length >= 2 && (
+          <CompareView frames={frames} aIdx={Math.min(cmpA, frames.length - 1)} bIdx={Math.min(cmpB, frames.length - 1)}
+            onA={setCmpA} onB={setCmpB} onClose={() => setCompareOpen(false)} />
         )}
       </div>
 
