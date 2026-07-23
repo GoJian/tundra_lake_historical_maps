@@ -116,3 +116,6 @@ table.lakes th { color: var(--muted); font-weight: 600; }
 
 /* ready-to-draw cursor: overrides MapLibre's inline drag cursor while drawing */
 .map.drawing canvas { cursor: crosshair !important; }
+
+.hint a { color: var(--accent); text-decoration: none; }
+.hint a:hover { text-decoration: underline; }
